@@ -15,30 +15,41 @@ class OfflineLLM:
         """
         Generate an answer strictly from retrieved contexts.
         """
-        context_text = "\n\n".join(
-            f"[Source: {c['source_file']}, Page: {c['page_number']}]\n{c['text']}"
-            for c in contexts
-        )
+
+        # Build clean context block
+        context_text = ""
+
+        for i, c in enumerate(contexts, 1):
+            context_text += (
+                f"[Source {i} | File: {c['source_file']} | "
+                f"Page: {c['page_number']} | "
+                f"Timestamp: {c['timestamp']}]\n"
+                f"{c['text']}\n\n"
+            )
 
         prompt = f"""
-You are a factual assistant.
-Answer ONLY using the information provided below.
-If the answer is not contained in the context, say "Not found in the provided documents".
+You are a precise factual assistant.
 
-Context:
-{context_text}
+Answer ONLY the given question using the provided context.
+Do NOT generate additional questions.
+Do NOT invent information.
+If the answer is not found in the context, say exactly:
+Not found in the provided documents.
 
 Question:
 {question}
 
-Answer (include citations):
+Context:
+{context_text}
+
+Answer:
 """
 
         output = self.llm(
             prompt,
-            max_tokens=512,
-            temperature=0.1,
-            stop=["</s>"]
+            max_tokens=400,
+            temperature=0.05,
+            stop=["Question:", "</s>"]
         )
 
         return output["choices"][0]["text"].strip()
