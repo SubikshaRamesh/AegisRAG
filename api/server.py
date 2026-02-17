@@ -30,6 +30,7 @@ from core.vector_store.faiss_manager import FaissManager
 from core.vector_store.image_faiss_manager import ImageFaissManager
 from core.ingestion.ingestion_manager import ingest
 from core.storage.metadata_store import MetadataStore
+from core.storage.chat_history_store import ChatHistoryStore
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,7 @@ logger = get_logger(__name__)
 # ============ GLOBAL STATE ============
 
 query_system: QuerySystem = None
+chat_history: ChatHistoryStore = None
 
 
 # ============ REQUEST CORRELATION TRACKING ============
@@ -71,8 +73,9 @@ async def lifespan(app: FastAPI):
 
 
 def startup():
-    """Initialize query system on startup."""
+    """Initialize query system and chat history on startup."""
     global query_system
+    global chat_history
 
     try:
         settings.validate()
@@ -103,6 +106,11 @@ def startup():
             model_path=settings.LLM_MODEL_PATH,
         )
         logger.info("Query system initialized (models loaded)")
+
+        # Initialize chat history store
+        logger.info("Initializing chat history store...")
+        chat_history = ChatHistoryStore(db_path=settings.DB_PATH)
+        logger.info("Chat history store initialized")
 
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
@@ -228,6 +236,16 @@ async def query_endpoint(
         # Execute query
         result = query_system.query(question, top_k=top_k)
         elapsed_time = time.time() - start_time
+
+        # Save to chat history
+        try:
+            chat_history.save_interaction(
+                question=question,
+                answer=result.get("answer", ""),
+                sources=result.get("citations", [])
+            )
+        except Exception as e:
+            logger.warning(f"[{correlation_id}] Failed to save chat history: {e}")
 
         logger.info(
             f"[{correlation_id}] Query complete - "
@@ -441,8 +459,169 @@ async def root() -> Dict:
             "GET /status": "System status",
             "POST /query": "Query the knowledge base",
             "POST /ingest": "Ingest a file",
+            "GET /history": "Get chat history",
+            "GET /history/search": "Search chat history",
+            "DELETE /history": "Clear chat history",
+            "GET /files": "Get file inventory",
+            "GET /files/search": "Search files",
         },
     }
+
+
+# ============ CHAT HISTORY ENDPOINTS ============
+
+@app.get("/history")
+async def get_history(limit: int = 100, offset: int = 0) -> Dict:
+    """
+    Get chat history ordered by newest first.
+
+    Query Parameters:
+        limit: Maximum number of records (default: 100)
+        offset: Number of records to skip (default: 0)
+
+    Returns:
+        List of chat history records with question, answer, sources, timestamp
+    """
+    try:
+        if chat_history is None:
+            raise RuntimeError("Chat history not initialized")
+
+        history = chat_history.get_history(limit=limit, offset=offset)
+
+        return {
+            "status": "success",
+            "count": len(history),
+            "limit": limit,
+            "offset": offset,
+            "history": history
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to retrieve chat history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history/search")
+async def search_history(query: str) -> Dict:
+    """
+    Search chat history by question or answer.
+
+    Query Parameters:
+        query: Search term (case-insensitive)
+
+    Returns:
+        List of matching chat history records
+    """
+    try:
+        if not query or not query.strip():
+            raise ValidationError("Search query cannot be empty")
+
+        if chat_history is None:
+            raise RuntimeError("Chat history not initialized")
+
+        results = chat_history.search_history(query=query.strip())
+
+        return {
+            "status": "success",
+            "query": query,
+            "count": len(results),
+            "results": results
+        }
+
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to search chat history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/history")
+async def clear_history() -> Dict:
+    """
+    Delete all chat history.
+
+    Returns:
+        Number of records deleted
+    """
+    try:
+        if chat_history is None:
+            raise RuntimeError("Chat history not initialized")
+
+        deleted_count = chat_history.clear_history()
+
+        return {
+            "status": "success",
+            "message": f"Deleted {deleted_count} chat history records",
+            "deleted_count": deleted_count
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to clear chat history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ FILE INVENTORY ENDPOINTS ============
+
+@app.get("/files")
+async def get_files_inventory() -> Dict:
+    """
+    Get inventory of all ingested files.
+
+    Returns:
+        List of files with:
+            - file_name: Source file name
+            - total_chunks: Number of chunks from this file
+            - first_ingested_timestamp: Earliest chunk timestamp
+            - last_ingested_timestamp: Latest chunk timestamp
+    """
+    try:
+        if query_system is None:
+            raise RuntimeError("Query system not initialized")
+
+        metadata_store = MetadataStore(db_path=settings.DB_PATH)
+        files = metadata_store.get_files_inventory()
+
+        return {
+            "status": "success",
+            "count": len(files),
+            "files": files
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to retrieve file inventory: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/files/search")
+async def search_files(query: str) -> Dict:
+    """
+    Search for ingested files by name.
+
+    Query Parameters:
+        query: File name search term (case-insensitive)
+
+    Returns:
+        List of matching files with metadata
+    """
+    try:
+        if not query or not query.strip():
+            raise ValidationError("Search query cannot be empty")
+
+        metadata_store = MetadataStore(db_path=settings.DB_PATH)
+        results = metadata_store.search_files(query=query.strip())
+
+        return {
+            "status": "success",
+            "query": query,
+            "count": len(results),
+            "results": results
+        }
+
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to search files: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============ MAIN ============

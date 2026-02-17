@@ -251,3 +251,98 @@ class MetadataStore:
                 raise
             finally:
                 conn.close()
+
+    def get_files_inventory(self) -> list:
+        """
+        Get list of all ingested files with metadata.
+        
+        Returns:
+            List of dicts with:
+                - file_name: The source file name
+                - total_chunks: Number of chunks from this file
+                - first_ingested_timestamp: Earliest chunk timestamp
+                - last_ingested_timestamp: Latest chunk timestamp
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            try:
+                cursor = conn.cursor()
+
+                cursor.execute("""
+                SELECT 
+                    source_file,
+                    COUNT(*) as total_chunks,
+                    MIN(timestamp) as first_ingested_timestamp,
+                    MAX(timestamp) as last_ingested_timestamp
+                FROM chunks
+                GROUP BY source_file
+                ORDER BY source_file ASC
+                """)
+
+                rows = cursor.fetchall()
+                files = []
+
+                for row in rows:
+                    files.append({
+                        "file_name": row[0],
+                        "total_chunks": row[1],
+                        "first_ingested_timestamp": row[2],
+                        "last_ingested_timestamp": row[3]
+                    })
+
+                logger.debug(f"Retrieved {len(files)} files from inventory")
+                return files
+
+            except Exception as e:
+                logger.error(f"Failed to retrieve files inventory: {e}", exc_info=True)
+                raise
+            finally:
+                conn.close()
+
+    def search_files(self, query: str) -> list:
+        """
+        Search for files by name.
+        
+        Args:
+            query: File name search term (case-insensitive)
+            
+        Returns:
+            List of matching file dicts
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            try:
+                cursor = conn.cursor()
+
+                search_term = f"%{query}%"
+                cursor.execute("""
+                SELECT 
+                    source_file,
+                    COUNT(*) as total_chunks,
+                    MIN(timestamp) as first_ingested_timestamp,
+                    MAX(timestamp) as last_ingested_timestamp
+                FROM chunks
+                WHERE source_file LIKE ? COLLATE NOCASE
+                GROUP BY source_file
+                ORDER BY source_file ASC
+                """, (search_term,))
+
+                rows = cursor.fetchall()
+                results = []
+
+                for row in rows:
+                    results.append({
+                        "file_name": row[0],
+                        "total_chunks": row[1],
+                        "first_ingested_timestamp": row[2],
+                        "last_ingested_timestamp": row[3]
+                    })
+
+                logger.info(f"Found {len(results)} matching files")
+                return results
+
+            except Exception as e:
+                logger.error(f"Failed to search files: {e}", exc_info=True)
+                raise
+            finally:
+                conn.close()
