@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  aegisrag:
+    build: .
+    container_name: aegisrag-api
+    ports:
+      - "8000:8000"
+    environment:
+      AEGIS_HOST: "0.0.0.0"
+      AEGIS_PORT: "8000"
+      AEGIS_DEBUG: "false"
+      AEGIS_LOG_LEVEL: "INFO"
+      AEGIS_WORKSPACE: "./workspaces/default"
+      AEGIS_DATA_PATH: "./data"
+      AEGIS_MODELS_PATH: "./models"
+      # LLM Configuration
+      LLM_CONTEXT_SIZE: "2048"
+      LLM_THREADS: "12"
+      LLM_MAX_TOKENS: "120"
+      LLM_TEMPERATURE: "0.0"
+      # Retrieval Configuration
+      RETRIEVAL_TOP_K: "3"
+      FAISS_DISTANCE_THRESHOLD: "1.0"
+      # Ingestion Configuration
+      MAX_UPLOAD_SIZE_MB: "500"
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./logs:/app/logs
+    stdin_open: true
+    tty: true
+    # Uncomment to always restart
+    # restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  # Optional: Add a reverse proxy for production
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: aegisrag-proxy
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - aegisrag
+
+volumes:
+  workspaces:
+  logs:

@@ -4,6 +4,7 @@ from typing import List
 
 from core.schema.chunk import Chunk
 from core.ingestion.audio_ingest import ingest_audio
+from core.embeddings.image_captioner import ImageCaptioner
 
 
 # -----------------------------------------------------
@@ -14,10 +15,6 @@ def extract_audio_from_video(
     video_path: str,
     output_dir: str = "temp_video_audio"
 ) -> str:
-    """
-    Extracts audio from a video file using ffmpeg.
-    Returns the path to the extracted .wav file.
-    """
 
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -55,15 +52,10 @@ def extract_audio_from_video(
 # -----------------------------------------------------
 
 def ingest_video(video_path: str) -> List[Chunk]:
-    """
-    Extract audio and reuse audio ingestion pipeline.
-    """
 
     audio_path = extract_audio_from_video(video_path)
-
     audio_chunks = ingest_audio(audio_path, source_id=video_path)
 
-    # Override source type
     for chunk in audio_chunks:
         chunk.source_type = "video"
 
@@ -79,9 +71,6 @@ def extract_frames_from_video(
     interval_seconds: int = 10,
     output_dir: str = "temp_video_frames"
 ):
-    """
-    Extract frames every N seconds.
-    """
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -108,17 +97,22 @@ def extract_frames_from_video(
 
 
 # -----------------------------------------------------
-# FRAME INGESTION (PERSIST FRAME PATH)
+# FRAME INGESTION WITH CAPTIONING
 # -----------------------------------------------------
+
+_frame_captioner = None
+
+def get_frame_captioner():
+    global _frame_captioner
+    if _frame_captioner is None:
+        _frame_captioner = ImageCaptioner()
+    return _frame_captioner
+
 
 def ingest_video_frames(
     video_path: str,
     interval_seconds: int = 10
 ) -> List[Chunk]:
-    """
-    Extract frames and create Chunk objects storing frame file paths.
-    Embeddings are NOT stored here.
-    """
 
     frame_folder = extract_frames_from_video(
         video_path,
@@ -135,14 +129,21 @@ def ingest_video_frames(
         return []
 
     frame_chunks = []
+    source_file = os.path.basename(video_path)
+    captioner = get_frame_captioner()
 
     for idx, frame_path in enumerate(frame_files):
         timestamp = idx * interval_seconds
+        caption = captioner.generate_caption(frame_path)
 
-        chunk = Chunk.create(
-            text=frame_path,  # 🔥 store image path
+        chunk_id = f"{source_file}_frame{idx}"
+
+        chunk = Chunk(
+            chunk_id=chunk_id,
+            text=caption.strip() if caption else "video frame",
             source_type="video_frame",
-            source_file=os.path.basename(video_path),
+            source_file=source_file,
+            page_number=frame_path,
             timestamp=timestamp,
         )
 
@@ -156,11 +157,6 @@ def ingest_video_frames(
 # -----------------------------------------------------
 
 def ingest_video_full(video_path: str) -> List[Chunk]:
-    """
-    Complete video ingestion:
-    - Audio transcript chunks
-    - Frame chunks
-    """
 
     audio_chunks = ingest_video(video_path)
     frame_chunks = ingest_video_frames(video_path, interval_seconds=5)

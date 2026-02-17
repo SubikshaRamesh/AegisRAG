@@ -6,17 +6,26 @@ class OfflineLLM:
     def __init__(self, model_path: str):
         self.llm = Llama(
             model_path=model_path,
-            n_ctx=4096,
-            n_threads=8,
+            n_ctx=2048,
+            n_threads=12,
+            n_batch=512,
             verbose=False
         )
 
     def generate_answer(self, question: str, contexts: List[Dict]) -> str:
         """
-        Generate an answer strictly from retrieved contexts.
+        Generate a strictly grounded answer from retrieved contexts.
         """
 
-        # Build clean context block
+        # --------------------------------------------------
+        # If no context, immediately return fallback
+        # --------------------------------------------------
+        if not contexts:
+            return "Not found in the provided documents."
+
+        # --------------------------------------------------
+        # Build structured context block
+        # --------------------------------------------------
         context_text = ""
 
         for i, c in enumerate(contexts, 1):
@@ -27,29 +36,45 @@ class OfflineLLM:
                 f"{c['text']}\n\n"
             )
 
+        # --------------------------------------------------
+        # STRICT EXTRACTION PROMPT (reduces hallucination)
+        # --------------------------------------------------
         prompt = f"""
-You are a precise factual assistant.
+        You are a strict information extractor.
 
-Answer ONLY the given question using the provided context.
-Do NOT generate additional questions.
-Do NOT invent information.
-If the answer is not found in the context, say exactly:
-Not found in the provided documents.
+        Your task is to extract relevant sentences from the context that directly answer the question.
 
-Question:
-{question}
+        Rules:
+        - Only copy or lightly compress information from the context.
+        - Do NOT add new explanations.
+        - Do NOT speculate.
+        - Do NOT extend beyond what is written.
+        - If the answer is not explicitly stated, respond exactly with:
+        Not found in the provided documents.
 
-Context:
-{context_text}
+        Question:
+        {question}
 
-Answer:
-"""
+        Context:
+        {context_text}
 
+        Extracted Answer:
+        """
+
+
+        # --------------------------------------------------
+        # Generate
+        # --------------------------------------------------
         output = self.llm(
             prompt,
-            max_tokens=400,
-            temperature=0.05,
+            max_tokens=150,
+            temperature=0.1,
             stop=["Question:", "</s>"]
         )
 
-        return output["choices"][0]["text"].strip()
+        answer = output["choices"][0]["text"].strip()
+
+        if not answer:
+            return "Not found in the provided documents."
+
+        return answer

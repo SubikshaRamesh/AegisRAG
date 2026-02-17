@@ -1,5 +1,4 @@
 from typing import List, Dict
-
 import numpy as np
 
 from core.embeddings.embedder import EmbeddingGenerator
@@ -14,11 +13,8 @@ from core.storage.metadata_store import MetadataStore
 class QuerySystem:
     """
     Multimodal RAG pipeline:
-
-    Text (MiniLM) → Text FAISS (384-dim)
-    Image (CLIP)  → Image FAISS (512-dim)
-
-    Results merged → SQLite fetch → LLM answer generation.
+    Text → MiniLM → Text FAISS
+    Image/Video → CLIP → Image FAISS
     """
 
     def __init__(
@@ -26,37 +22,25 @@ class QuerySystem:
         text_faiss: FaissManager,
         image_faiss: ImageFaissManager,
         db_path: str = "workspaces/default/storage/metadata/chunks.db",
-        model_path: str = "models/mistral.gguf",
+        model_path: str = "models/Phi-3-mini-4k-instruct-q4.gguf",
     ):
-        # Embedders
         self.text_embedder = EmbeddingGenerator()
         self.clip_embedder = CLIPEmbeddingGenerator()
 
-        # Dual FAISS indexes
         self.text_faiss = text_faiss
         self.image_faiss = image_faiss
 
-        # LLM
         self.llm = OfflineLLM(model_path=model_path)
-
-        # SQLite metadata store
         self.store = MetadataStore(db_path)
 
-    def query(self, question: str, top_k: int = 5) -> Dict:
+    def query(self, question: str, top_k: int = 3) -> Dict:
         """
-        Full multimodal RAG pipeline:
-        1. Embed question (text + CLIP)
-        2. Search both FAISS indexes
-        3. Merge & deduplicate chunk IDs
-        4. Fetch chunks from SQLite
-        5. Build LLM context
-        6. Generate answer
-        7. Return answer + citations
+        Uses top_k=3 for stable retrieval.
         """
 
-        # ----------------------------
-        # 1️⃣ TEXT SEARCH (MiniLM)
-        # ----------------------------
+        # -------------------------------------------------
+        # 1️⃣ TEXT SEARCH
+        # -------------------------------------------------
         text_query_embedding = self.text_embedder.embed([question])
         text_query_embedding = np.array(text_query_embedding).astype("float32")
 
@@ -65,9 +49,9 @@ class QuerySystem:
             top_k=top_k
         )
 
-        # ----------------------------
-        # 2️⃣ IMAGE SEARCH (CLIP)
-        # ----------------------------
+        # -------------------------------------------------
+        # 2️⃣ IMAGE SEARCH
+        # -------------------------------------------------
         image_results = []
 
         if len(self.image_faiss.chunk_ids) > 0:
@@ -79,42 +63,99 @@ class QuerySystem:
                 top_k=top_k
             )
 
-        # ----------------------------
-        # 3️⃣ MERGE RESULTS
-        # ----------------------------
+        # -------------------------------------------------
+        # 3️⃣ COMBINE
+        # -------------------------------------------------
         combined = text_results + image_results
-        combined = sorted(combined, key=lambda x: x["distance"])
 
-        # Deduplicate chunk IDs while preserving order
+        if not combined:
+            return {
+                "answer": "Information not found in knowledge base.",
+                "citations": [],
+                "confidence": 0
+            }
+
+        # -------------------------------------------------
+        # 4️⃣ KEYWORD-AWARE RE-RANKING
+        # -------------------------------------------------
+        question_lower = question.lower()
+
+        def keyword_score(chunk_id):
+            chunk = self.store.get_chunk(chunk_id)
+            if not chunk or not chunk.text:
+                return 0
+            text_lower = chunk.text.lower()
+            score = 0
+            for word in question_lower.split():
+                if word in text_lower:
+                    score += 1
+            return score
+
+        combined = sorted(
+            combined,
+            key=lambda x: (
+                keyword_score(x["chunk_id"]),
+                -x["distance"]
+            ),
+            reverse=True
+        )
+
+        # -------------------------------------------------
+        # 5️⃣ DEDUPLICATE + LIMIT
+        # -------------------------------------------------
         chunk_ids: List[str] = []
+        distances: List[float] = []
 
         for result in combined:
             cid = result["chunk_id"]
+
             if cid not in chunk_ids:
                 chunk_ids.append(cid)
+                distances.append(result["distance"])
 
             if len(chunk_ids) >= top_k:
                 break
 
-        # ----------------------------
-        # 4️⃣ FETCH CHUNKS FROM DB
-        # ----------------------------
+        # -------------------------------------------------
+        # 6️⃣ FETCH FROM DB
+        # -------------------------------------------------
         retrieved_chunks = self._fetch_chunks_from_db(chunk_ids)
 
-        # ----------------------------
-        # 5️⃣ BUILD CLEAN CONTEXT
-        # ----------------------------
+        if not retrieved_chunks:
+            return {
+                "answer": "Information not found in knowledge base.",
+                "citations": [],
+                "confidence": 0
+            }
+
+        # -------------------------------------------------
+        # 7️⃣ BUILD CONTEXT
+        # -------------------------------------------------
         contexts = self._build_context(retrieved_chunks)
 
-        # ----------------------------
-        # 6️⃣ GENERATE ANSWER
-        # ----------------------------
+        if not contexts:
+            return {
+                "answer": "Information not found in knowledge base.",
+                "citations": [],
+                "confidence": 0
+            }
+
+        # -------------------------------------------------
+        # 8️⃣ GENERATE ANSWER
+        # -------------------------------------------------
         answer = self.llm.generate_answer(question, contexts)
 
-        # ----------------------------
-        # 7️⃣ PREPARE CITATIONS
-        # ----------------------------
-        seen = set()
+        # -------------------------------------------------
+        # 9️⃣ CONFIDENCE (scaled from L2 distance)
+        # -------------------------------------------------
+        avg_distance = sum(distances) / len(distances)
+
+        similarity = max(0, 1 - (avg_distance / 2))
+        confidence = round(similarity * 100, 2)
+
+        # -------------------------------------------------
+        # 🔟 CITATIONS
+        # -------------------------------------------------
         citations: List[Dict] = []
 
         for chunk in retrieved_chunks:
@@ -130,7 +171,8 @@ class QuerySystem:
 
         return {
             "answer": answer,
-            "citations": citations
+            "citations": citations,
+            "confidence": confidence
         }
 
     # --------------------------------------------------
@@ -147,22 +189,13 @@ class QuerySystem:
         return chunks
 
     # --------------------------------------------------
-    # Build clean LLM context
+    # Build LLM context
     # --------------------------------------------------
     def _build_context(self, chunks: List[Chunk]) -> List[Dict]:
-        """
-        Build clean LLM context.
-        Skip raw image file path chunks.
-        """
 
         contexts: List[Dict] = []
 
         for chunk in chunks:
-
-            # Skip raw image file path chunks
-            if chunk.source_type == "image":
-                continue
-
             contexts.append(
                 {
                     "text": chunk.text,

@@ -1,15 +1,67 @@
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
 
 # Virtual environments
 venv/
 .env/
+.venv/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
 
 # Workspace / user data
 workspaces/
+uploads/
+temp_video_audio/
+temp_video_frames/
+data/
+
+# Models (large files)
+models/
+*.gguf
+
+# Logs
+logs/
+*.log
 
 # OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Databases and indexes
+*.db
+*.sqlite
+*.sqlite3
+*.index
+*.faiss
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local config
+*.local
+
+# Docker
+.dockerignore
