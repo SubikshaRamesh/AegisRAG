@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 210 40% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 210 40% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 210 40% 10%;
+
+    --primary: 199 89% 48%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 199 30% 94%;
+    --secondary-foreground: 199 60% 30%;
+
+    --muted: 210 20% 96%;
+    --muted-foreground: 210 15% 50%;
+
+    --accent: 199 80% 92%;
+    --accent-foreground: 199 70% 30%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 20% 90%;
+    --input: 210 20% 90%;
+    --ring: 199 89% 48%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 210 20% 30%;
+    --sidebar-primary: 199 89% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 199 80% 95%;
+    --sidebar-accent-foreground: 199 70% 25%;
+    --sidebar-border: 210 20% 92%;
+    --sidebar-ring: 199 89% 48%;
+
+    --sky-50: 199 90% 97%;
+    --sky-100: 199 85% 93%;
+    --sky-200: 199 80% 85%;
+    --sky-300: 199 85% 72%;
+    --sky-400: 199 89% 58%;
+    --sky-500: 199 89% 48%;
+    --sky-600: 199 95% 40%;
+    --sky-700: 199 90% 32%;
+
+    --gradient-sky: linear-gradient(135deg, hsl(199, 89%, 48%), hsl(199, 95%, 40%));
+    --gradient-sky-soft: linear-gradient(135deg, hsl(199, 90%, 97%), hsl(199, 85%, 93%));
+    --shadow-sky: 0 4px 20px -4px hsl(199 89% 48% / 0.25);
+    --shadow-card: 0 1px 3px 0 hsl(210 20% 10% / 0.06), 0 1px 2px -1px hsl(210 20% 10% / 0.06);
+    --shadow-card-hover: 0 10px 25px -5px hsl(210 20% 10% / 0.08), 0 8px 10px -6px hsl(210 20% 10% / 0.04);
+  }
+
+  .dark {
+    --background: 210 40% 6%;
+    --foreground: 210 20% 95%;
+    --card: 210 40% 8%;
+    --card-foreground: 210 20% 95%;
+    --popover: 210 40% 8%;
+    --popover-foreground: 210 20% 95%;
+    --primary: 199 89% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 199 30% 15%;
+    --secondary-foreground: 199 60% 80%;
+    --muted: 210 30% 15%;
+    --muted-foreground: 210 15% 60%;
+    --accent: 199 50% 15%;
+    --accent-foreground: 199 80% 80%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 210 30% 18%;
+    --input: 210 30% 18%;
+    --ring: 199 89% 48%;
+    --sidebar-background: 210 40% 6%;
+    --sidebar-foreground: 210 20% 80%;
+    --sidebar-primary: 199 89% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 199 50% 12%;
+    --sidebar-accent-foreground: 199 80% 80%;
+    --sidebar-border: 210 30% 18%;
+    --sidebar-ring: 199 89% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: "Segoe UI Variable", "Bahnschrift", "Segoe UI", sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  }
+}
+
+@layer utilities {
+  .gradient-sky {
+    background: var(--gradient-sky);
+  }
+  .gradient-sky-soft {
+    background: var(--gradient-sky-soft);
+  }
+  .shadow-sky {
+    box-shadow: var(--shadow-sky);
+  }
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+  .shadow-card-hover {
+    box-shadow: var(--shadow-card-hover);
+  }
+}
