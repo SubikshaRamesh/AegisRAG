@@ -12,16 +12,26 @@ class OfflineLLM:
             verbose=False
         )
 
-    def generate_answer(self, question: str, contexts: List[Dict]) -> str:
+    def generate_answer(
+        self,
+        question: str,
+        contexts: List[Dict],
+        history: List[Dict] = None,
+    ) -> str:
         """
         Generate a strictly grounded answer from retrieved contexts.
+        
+        Multilingual support:
+        - Question may be in any language
+        - Always responds in English for stability
+        - Uses only provided context (no speculation)
         """
 
         # --------------------------------------------------
         # If no context, immediately return fallback
         # --------------------------------------------------
         if not contexts:
-            return "Not found in the provided documents."
+            return "Information not found in knowledge base."
 
         # --------------------------------------------------
         # Build structured context block
@@ -37,30 +47,43 @@ class OfflineLLM:
             )
 
         # --------------------------------------------------
-        # STRICT EXTRACTION PROMPT (reduces hallucination)
+        # MULTILINGUAL-SAFE EXTRACTION PROMPT
         # --------------------------------------------------
-        prompt = f"""
-        You are a strict information extractor.
+        history_block = ""
+        if history:
+            formatted_lines = []
+            for msg in history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "").strip()
+                if not content:
+                    continue
+                formatted_lines.append(f"{role.title()}: {content}")
+            if formatted_lines:
+                history_block = "\nConversation History (last 3 messages):\n" + "\n".join(formatted_lines) + "\n"
 
-        Your task is to extract relevant sentences from the context that directly answer the question.
+        prompt = f"""You are a helpful AI assistant.
 
-        Rules:
-        - Only copy or lightly compress information from the context.
-        - Do NOT add new explanations.
-        - Do NOT speculate.
-        - Do NOT extend beyond what is written.
-        - If the answer is not explicitly stated, respond exactly with:
-        Not found in the provided documents.
+The user may ask questions in any language.
+You MUST always respond in English.
+Use only the provided context to answer.
 
-        Question:
-        {question}
+Rules:
+- Extract relevant information directly from the context
+- Do NOT add new explanations or interpretations
+- Do NOT speculate or make assumptions
+- Do NOT extend beyond what is in the context
+- If the answer is not found in the context, respond exactly with:
+"Information not found in knowledge base."
+- Always respond in English, regardless of the question language
+{history_block}
+Question:
+{question}
 
-        Context:
-        {context_text}
+Context:
+{context_text}
 
-        Extracted Answer:
-        """
-
+Answer (in English):
+"""
 
         # --------------------------------------------------
         # Generate
@@ -75,6 +98,6 @@ class OfflineLLM:
         answer = output["choices"][0]["text"].strip()
 
         if not answer:
-            return "Not found in the provided documents."
+            return "Information not found in knowledge base."
 
         return answer

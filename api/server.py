@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
+from threading import RLock
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
@@ -31,6 +32,7 @@ from core.vector_store.image_faiss_manager import ImageFaissManager
 from core.ingestion.ingestion_manager import ingest
 from core.storage.metadata_store import MetadataStore
 from core.storage.chat_history_store import ChatHistoryStore
+from core.utils.translator import Translator
 
 logger = get_logger(__name__)
 
@@ -39,6 +41,9 @@ logger = get_logger(__name__)
 
 query_system: QuerySystem = None
 chat_history: ChatHistoryStore = None
+translator: Translator = None
+chat_sessions: Dict[str, List[Dict[str, str]]] = {}
+chat_sessions_lock = RLock()
 
 
 # ============ REQUEST CORRELATION TRACKING ============
@@ -76,6 +81,7 @@ def startup():
     """Initialize query system and chat history on startup."""
     global query_system
     global chat_history
+    global translator
 
     try:
         settings.validate()
@@ -97,14 +103,21 @@ def startup():
         )
         logger.info(f"Image FAISS loaded ({len(image_faiss.chunk_ids)} vectors)")
 
+        # Initialize translator for Tamil-to-English translations
+        logger.info("Loading Tamil-English translator...")
+        translator = Translator()
+        logger.info("Tamil-English translator loaded successfully")
+
         # Initialize query system (ONCE at startup)
-        logger.info("Initializing embedding models...")
+        logger.info("Initializing multilingual embedding models...")
         query_system = QuerySystem(
             text_faiss=text_faiss,
             image_faiss=image_faiss,
             db_path=settings.DB_PATH,
             model_path=settings.LLM_MODEL_PATH,
+            translator=translator,
         )
+        logger.info("Multilingual embedding model loaded successfully")
         logger.info("Query system initialized (models loaded)")
 
         # Initialize chat history store
@@ -140,11 +153,26 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins (configure for production)
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def append_session_message(session_id: str, role: str, content: str) -> None:
+    """Append a message to the in-memory session history with max length 10."""
+    with chat_sessions_lock:
+        history = chat_sessions.setdefault(session_id, [])
+        history.append({"role": role, "content": content, "timestamp": time.time()})
+        if len(history) > 10:
+            chat_sessions[session_id] = history[-10:]
+
+
+def get_session_history(session_id: str) -> List[Dict[str, str]]:
+    """Get full session history for a session id."""
+    with chat_sessions_lock:
+        return list(chat_sessions.get(session_id, []))
 
 # Request correlation middleware
 app.middleware("http")(add_correlation_id)
@@ -219,7 +247,7 @@ async def query_endpoint(
         query_request: QueryRequest model with question and top_k
 
     Returns:
-        Dict with answer, citations, and confidence score
+        Dict with answer, sources, and confidence score
     """
     correlation_id = request.state.correlation_id if request else str(uuid.uuid4())
     start_time = time.time()
@@ -229,20 +257,31 @@ async def query_endpoint(
             raise RuntimeError("Query system not initialized")
 
         question = query_request.question
-        top_k = query_request.top_k
+        session_id = query_request.session_id
+        top_k = settings.RETRIEVAL_TOP_K
 
         logger.info(f"[{correlation_id}] Question: {question[:100]}...")
 
+        append_session_message(session_id, "user", question)
+        history_for_prompt = get_session_history(session_id)[-3:]
+
         # Execute query
-        result = query_system.query(question, top_k=top_k)
+        result = query_system.query(
+            question,
+            top_k=top_k,
+            history_messages=history_for_prompt,
+        )
         elapsed_time = time.time() - start_time
+
+        answer = result.get("answer", "")
+        append_session_message(session_id, "assistant", answer)
 
         # Save to chat history
         try:
             chat_history.save_interaction(
                 question=question,
                 answer=result.get("answer", ""),
-                sources=result.get("citations", [])
+                sources=result.get("sources", [])
             )
         except Exception as e:
             logger.warning(f"[{correlation_id}] Failed to save chat history: {e}")
@@ -250,14 +289,23 @@ async def query_endpoint(
         logger.info(
             f"[{correlation_id}] Query complete - "
             f"confidence: {result['confidence']}%, "
-            f"sources: {len(result['citations'])}, "
+            f"sources: {len(result.get('sources', []))}, "
             f"elapsed: {elapsed_time:.2f}s"
         )
 
-        # Add performance metrics to response
-        result["processing_time_seconds"] = round(elapsed_time, 2)
+        sources = []
+        for source in result.get("sources", []):
+            sources.append({
+                "type": source.get("source_type", "unknown"),
+                "source": source.get("source_file", ""),
+                "score": source.get("score", 0),
+            })
 
-        return result
+        return {
+            "answer": answer,
+            "confidence": result.get("confidence", 0),
+            "sources": sources,
+        }
 
     except ValidationError as e:
         logger.warning(f"[{correlation_id}] Validation error: {e}")
@@ -280,12 +328,11 @@ def cleanup_temp_files():
             logger.debug(f"Cleaned up {temp_dir}")
 
 
-@app.post("/ingest")
-async def ingest_endpoint(
-    file: UploadFile = File(...),
-    file_type: str = None,
-    background_tasks: BackgroundTasks = None,
-    request: Request = None,
+async def handle_ingest(
+    file: UploadFile,
+    file_type: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
 ) -> Dict:
     """
     File ingestion endpoint.
@@ -425,6 +472,28 @@ async def ingest_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/ingest")
+async def ingest_endpoint(
+    file: UploadFile = File(...),
+    file_type: str = None,
+    background_tasks: BackgroundTasks = None,
+    request: Request = None,
+) -> Dict:
+    """Backward-compatible ingestion endpoint."""
+    return await handle_ingest(file, file_type, background_tasks, request)
+
+
+@app.post("/upload")
+async def upload_endpoint(
+    file: UploadFile = File(...),
+    file_type: str = None,
+    background_tasks: BackgroundTasks = None,
+    request: Request = None,
+) -> Dict:
+    """File upload endpoint for the frontend."""
+    return await handle_ingest(file, file_type, background_tasks, request)
+
+
 # ============ ERROR HANDLERS ============
 
 @app.exception_handler(AegisRAGError)
@@ -458,8 +527,10 @@ async def root() -> Dict:
             "GET /health": "Health check",
             "GET /status": "System status",
             "POST /query": "Query the knowledge base",
-            "POST /ingest": "Ingest a file",
-            "GET /history": "Get chat history",
+            "POST /upload": "Upload and ingest a file",
+            "POST /ingest": "Ingest a file (legacy)",
+            "GET /history/{session_id}": "Get in-memory session history",
+            "GET /history": "Get persisted chat history",
             "GET /history/search": "Search chat history",
             "DELETE /history": "Clear chat history",
             "GET /files": "Get file inventory",
@@ -499,6 +570,22 @@ async def get_history(limit: int = 100, offset: int = 0) -> Dict:
     except Exception as e:
         logger.error(f"Failed to retrieve chat history: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history/{session_id}")
+async def get_session_history_endpoint(session_id: str) -> Dict:
+    """Get in-memory session history for a specific session."""
+    if not session_id or not session_id.strip():
+        raise HTTPException(status_code=400, detail="Session ID is required")
+
+    history = get_session_history(session_id)
+
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "count": len(history),
+        "history": history,
+    }
 
 
 @app.get("/history/search")

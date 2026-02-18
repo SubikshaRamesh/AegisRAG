@@ -46,7 +46,7 @@ class Settings:
     # ============ MODELS ============
     TEXT_EMBEDDER_MODEL: str = os.getenv(
         "TEXT_EMBEDDER_MODEL", 
-        "sentence-transformers/all-MiniLM-L6-v2"
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
     CLIP_MODEL: str = os.getenv("CLIP_MODEL", "ViT-B-16")
     CLIP_PRETRAINED: str = os.getenv("CLIP_PRETRAINED", "openai")

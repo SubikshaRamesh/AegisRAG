@@ -81,7 +81,13 @@ class ImageFaissManager:
     # Search
     # ----------------------------
     def search(self, query_embedding: np.ndarray, top_k: int = 5):
-        DISTANCE_THRESHOLD = 1.0
+        """
+        Search image FAISS index (CLIP embeddings).
+        
+        Returns all top_k valid results without aggressive distance filtering.
+        L2 distances vary by embedding model - strict thresholds break retrieval
+        when switching models.
+        """
         query_embedding = query_embedding.astype(np.float32)
         faiss.normalize_L2(query_embedding)
 
@@ -89,8 +95,9 @@ class ImageFaissManager:
             distances, indices = self.index.search(query_embedding, top_k)
 
         results = []
+        # Return all valid results without filtering
         for idx, dist in zip(indices[0], distances[0]):
-            if 0 <= idx < len(self.chunk_ids) and dist <= DISTANCE_THRESHOLD:
+            if 0 <= idx < len(self.chunk_ids):
                 results.append({
                     "chunk_id": self.chunk_ids[idx],
                     "distance": float(dist)

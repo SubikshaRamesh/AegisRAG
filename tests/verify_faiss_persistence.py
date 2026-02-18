@@ -13,7 +13,7 @@ from core.vector_store.faiss_manager import FaissManager
 
 FAISS_INDEX_PATH = "workspaces/default/storage/metadata/faiss.index"
 FAISS_CHUNK_IDS_PATH = "workspaces/default/storage/metadata/chunk_ids.pkl"
-EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 produces 384-dim vectors
+EMBEDDING_DIM = 384  # paraphrase-multilingual-MiniLM-L12-v2 produces 384-dim vectors
 
 
 def main():

@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 import numpy as np
 
 from core.embeddings.embedder import EmbeddingGenerator
@@ -8,13 +8,21 @@ from core.vector_store.image_faiss_manager import ImageFaissManager
 from core.schema.chunk import Chunk
 from core.llm.generator import OfflineLLM
 from core.storage.metadata_store import MetadataStore
+from core.utils.translator import Translator
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class QuerySystem:
     """
     Multimodal RAG pipeline:
-    Text → MiniLM → Text FAISS
-    Image/Video → CLIP → Image FAISS
+    Text → Multilingual MiniLM (50+ languages) → Text FAISS (384-dim)
+    Image/Video → CLIP → Image FAISS (512-dim)
+    
+    IMPORTANT:
+    Embedding model is loaded ONCE at startup and reused for all queries and ingestion.
+    This ensures consistency across all vector operations.
     """
 
     def __init__(
@@ -23,6 +31,7 @@ class QuerySystem:
         image_faiss: ImageFaissManager,
         db_path: str = "workspaces/default/storage/metadata/chunks.db",
         model_path: str = "models/Phi-3-mini-4k-instruct-q4.gguf",
+        translator: Optional[Translator] = None,
     ):
         self.text_embedder = EmbeddingGenerator()
         self.clip_embedder = CLIPEmbeddingGenerator()
@@ -32,16 +41,48 @@ class QuerySystem:
 
         self.llm = OfflineLLM(model_path=model_path)
         self.store = MetadataStore(db_path)
+        self.translator = translator
 
-    def query(self, question: str, top_k: int = 3) -> Dict:
+    def query(
+        self,
+        question: str,
+        top_k: int = 3,
+        history_messages: Optional[List[Dict]] = None,
+    ) -> Dict:
         """
         Uses top_k=3 for stable retrieval.
+        Supports multilingual queries with local Tamil-to-English translation and normalization.
         """
 
         # -------------------------------------------------
-        # 1️⃣ TEXT SEARCH
+        # 0️⃣ LOCAL TRANSLATION (Tamil → English)
         # -------------------------------------------------
-        text_query_embedding = self.text_embedder.embed([question])
+        # If translator is available and question contains non-ASCII characters (likely Tamil),
+        # translate to English first for better embedding alignment.
+        translated_question = question
+        if self.translator and self.translator.needs_translation(question):
+            translated_question = self.translator.translate(question)
+            logger.info(f"[TRANSLATE] Question translated: {question[:50]}... → {translated_question[:50]}...")
+        else:
+            translated_question = question
+
+        # -------------------------------------------------
+        # 1️⃣ MULTILINGUAL QUERY NORMALIZATION
+        # -------------------------------------------------
+        # Lightweight prefix to improve multilingual retrieval accuracy.
+        # The embedding model aligns better with English semantic patterns.
+        # This hint encourages the model to translate the query semantically
+        # during embedding generation, improving retrieval across languages.
+        # Original question is preserved for logging/display.
+        normalized_question = f"Translate this to English and answer: {translated_question}"
+        logger.info(f"[QUERY] Original: {question[:100]}...")
+        logger.info(f"[QUERY] Translated: {translated_question[:100]}...")
+        logger.info(f"[QUERY] Normalized for embedding: {normalized_question[:100]}...")
+
+        # -------------------------------------------------
+        # 2️⃣ TEXT SEARCH
+        # -------------------------------------------------
+        text_query_embedding = self.text_embedder.embed([normalized_question])
         text_query_embedding = np.array(text_query_embedding).astype("float32")
 
         text_results = self.text_faiss.search(
@@ -50,12 +91,13 @@ class QuerySystem:
         )
 
         # -------------------------------------------------
-        # 2️⃣ IMAGE SEARCH
+        # 3️⃣ IMAGE SEARCH
         # -------------------------------------------------
         image_results = []
 
         if len(self.image_faiss.chunk_ids) > 0:
-            image_query_embedding = self.clip_embedder.embed_text([question])
+            # Image CLIP embedding also uses normalized question
+            image_query_embedding = self.clip_embedder.embed_text([normalized_question])
             image_query_embedding = np.array(image_query_embedding).astype("float32")
 
             image_results = self.image_faiss.search(
@@ -64,7 +106,7 @@ class QuerySystem:
             )
 
         # -------------------------------------------------
-        # 3️⃣ COMBINE
+        # 4️⃣ COMBINE
         # -------------------------------------------------
         combined = text_results + image_results
 
@@ -76,7 +118,7 @@ class QuerySystem:
             }
 
         # -------------------------------------------------
-        # 4️⃣ KEYWORD-AWARE RE-RANKING
+        # 5️⃣ KEYWORD-AWARE RE-RANKING
         # -------------------------------------------------
         question_lower = question.lower()
 
@@ -101,7 +143,7 @@ class QuerySystem:
         )
 
         # -------------------------------------------------
-        # 5️⃣ DEDUPLICATE + LIMIT
+        # 6️⃣ DEDUPLICATE + LIMIT
         # -------------------------------------------------
         chunk_ids: List[str] = []
         distances: List[float] = []
@@ -117,7 +159,7 @@ class QuerySystem:
                 break
 
         # -------------------------------------------------
-        # 6️⃣ FETCH FROM DB
+        # 7️⃣ FETCH FROM DB
         # -------------------------------------------------
         retrieved_chunks = self._fetch_chunks_from_db(chunk_ids)
 
@@ -129,7 +171,7 @@ class QuerySystem:
             }
 
         # -------------------------------------------------
-        # 7️⃣ BUILD CONTEXT
+        # 8️⃣ BUILD CONTEXT
         # -------------------------------------------------
         contexts = self._build_context(retrieved_chunks)
 
@@ -141,12 +183,31 @@ class QuerySystem:
             }
 
         # -------------------------------------------------
-        # 8️⃣ GENERATE ANSWER
+        # 9️⃣ GENERATE ANSWER
         # -------------------------------------------------
-        answer = self.llm.generate_answer(question, contexts)
+        answer = self.llm.generate_answer(question, contexts, history_messages or [])
 
         # -------------------------------------------------
-        # 9️⃣ CONFIDENCE (scaled from L2 distance)
+        # 🔟 CHECK IF ANSWER WAS FOUND (UX Improvement)
+        # -------------------------------------------------
+        # When LLM returns "not found" message, clear citations and confidence.
+        # This improves UX by not showing confusing retrieved citations when
+        # the system explicitly states the answer is not in the knowledge base.
+        answer_not_found = (
+            "Information not found in knowledge base" in answer
+            or "Not found in the provided documents" in answer
+        )
+
+        if answer_not_found:
+            logger.info("Answer not found in knowledge base - clearing citations")
+            return {
+                "answer": answer,
+                "citations": [],  # No citations when answer not found
+                "confidence": 0     # Zero confidence when answer not found
+            }
+
+        # -------------------------------------------------
+        # 1️⃣1️⃣ CONFIDENCE (scaled from L2 distance)
         # -------------------------------------------------
         avg_distance = sum(distances) / len(distances)
 
@@ -154,24 +215,34 @@ class QuerySystem:
         confidence = round(similarity * 100, 2)
 
         # -------------------------------------------------
-        # 🔟 CITATIONS
+        # 1️⃣2️⃣ SOURCES
         # -------------------------------------------------
-        citations: List[Dict] = []
+        distance_by_chunk = {
+            chunk_id: distances[idx]
+            for idx, chunk_id in enumerate(chunk_ids)
+        }
+
+        sources: List[Dict] = []
 
         for chunk in retrieved_chunks:
-            citation = {
+            distance = distance_by_chunk.get(chunk.chunk_id, avg_distance)
+            similarity = max(0, 1 - (distance / 2))
+            score = round(similarity * 100, 2)
+
+            source = {
                 "source_type": chunk.source_type,
                 "source_file": chunk.source_file,
+                "score": score,
                 "page_number": chunk.page_number,
                 "timestamp": chunk.timestamp,
             }
 
-            if citation not in citations:
-                citations.append(citation)
+            if source not in sources:
+                sources.append(source)
 
         return {
             "answer": answer,
-            "citations": citations,
+            "sources": sources,
             "confidence": confidence
         }
 

@@ -86,21 +86,66 @@ class FaissManager:
     # Search
     # ----------------------------
     def search(self, query_embedding: np.ndarray, top_k: int = 5):
-        DISTANCE_THRESHOLD = 1.0
+        """
+        Search FAISS index with query embedding.
+        
+        IMPORTANT:
+        After switching embedding models (e.g., all-MiniLM-L6-v2 to multilingual),
+        L2 distances change significantly. Strict distance thresholds can filter out
+        valid results. This implementation returns top_k results without aggressive
+        filtering to ensure retrieval works across different embedding models.
+        
+        Only invalid indices (-1) are filtered out.
+        """
         query_embedding = query_embedding.astype(np.float32)
+        
+        # DEBUG: Log query and index dimensions
+        logger.info("[DEBUG RETRIEVAL] --- FAISS SEARCH DEBUG START ---")
+        logger.info(f"[DEBUG RETRIEVAL] Query embedding shape: {query_embedding.shape}")
+        query_dim = query_embedding.shape[1] if len(query_embedding.shape) > 1 else query_embedding.shape[0]
+        logger.info(f"[DEBUG RETRIEVAL] Query embedding dimension: {query_dim}D")
+        logger.info(f"[DEBUG RETRIEVAL] FAISS index.d (embedding dim): {self.index.d}D")
+        logger.info(f"[DEBUG RETRIEVAL] FAISS index.ntotal (vectors stored): {self.index.ntotal}")
+        logger.info(f"[DEBUG RETRIEVAL] Chunk IDs count: {len(self.chunk_ids)}")
+        
+        # Check dimension mismatch
+        if query_dim != self.index.d:
+            logger.error(f"[DEBUG RETRIEVAL] DIMENSION MISMATCH! Query: {query_dim}, Index: {self.index.d}")
+            # This is a critical error - cannot proceed
+            raise ValueError(f"Embedding dimension mismatch: query={query_dim}, index={self.index.d}")
+        else:
+            logger.info(f"[DEBUG RETRIEVAL] Embeddings match: {query_dim}D")
+        
+        # Normalize for L2 distance
         faiss.normalize_L2(query_embedding)
 
         with self._lock:
             distances, indices = self.index.search(query_embedding, top_k)
 
+        # DEBUG: Log raw FAISS results
+        logger.info(f"[DEBUG RETRIEVAL] Raw FAISS search returned {len(indices[0])} results")
+        logger.info(f"[DEBUG RETRIEVAL] Raw distances (L2): {distances[0]}")
+        logger.info(f"[DEBUG RETRIEVAL] Raw indices: {indices[0]}")
+        
         results = []
+        invalid_count = 0
+        
+        # Return all valid results (no aggressive distance filtering)
         for idx, dist in zip(indices[0], distances[0]):
-            if 0 <= idx < len(self.chunk_ids) and dist <= DISTANCE_THRESHOLD:
+            # Only filter out invalid indices (-1)
+            if 0 <= idx < len(self.chunk_ids):
                 results.append({
                     "chunk_id": self.chunk_ids[idx],
                     "distance": float(dist)
                 })
+                logger.info(f"[DEBUG RETRIEVAL] ✓ INCLUDED: idx={idx}, distance={dist:.4f}, chunk_id={self.chunk_ids[idx][:20]}...")
+            else:
+                invalid_count += 1
+                logger.warning(f"[DEBUG RETRIEVAL] Invalid index: {idx} (FAISS returns -1 for missing results)")
 
+        logger.info(f"[DEBUG RETRIEVAL] Final results: {len(results)}/{top_k} valid (invalid: {invalid_count})")
+        logger.info("[DEBUG RETRIEVAL] --- FAISS SEARCH DEBUG END ---")
+        
         return results
 
     # ----------------------------

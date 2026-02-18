@@ -15,11 +15,11 @@ class QueryRequest(BaseModel):
         max_length=1000,
         description="The question to ask"
     )
-    top_k: int = Field(
-        3,
-        ge=1,
-        le=10,
-        description="Number of top results to retrieve"
+    session_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="Client session identifier"
     )
 
     @validator("question")
@@ -28,21 +28,26 @@ class QueryRequest(BaseModel):
             raise ValueError("Question cannot be empty or whitespace only")
         return v.strip()
 
+    @validator("session_id")
+    def session_id_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError("Session ID cannot be empty or whitespace only")
+        return v.strip()
 
-class Citation(BaseModel):
-    """Citation model for sources."""
 
-    source_type: str = Field(..., description="Type of source (pdf, image, audio, video)")
-    source_file: str = Field(..., description="Name of the source file")
-    page_number: Optional[int] = Field(None, description="Page number (for PDFs)")
-    timestamp: Optional[float] = Field(None, description="Timestamp in seconds (for audio/video)")
+class Source(BaseModel):
+    """Source model for response citations."""
+
+    type: str = Field(..., description="Type of source (pdf, image, audio, video)")
+    source: str = Field(..., description="Name of the source file")
+    score: float = Field(..., ge=0, le=100, description="Relevance score (0-100)")
 
 
 class QueryResponse(BaseModel):
     """Query response model."""
 
     answer: str = Field(..., description="The generated answer")
-    citations: List[Citation] = Field(
+    sources: List[Source] = Field(
         default_factory=list,
         description="List of sources used to generate the answer"
     )
