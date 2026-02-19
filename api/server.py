@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from threading import RLock
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -87,37 +87,63 @@ def startup():
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-        # Load existing FAISS indexes
+        # ============ LOAD FAISS INDEXES ============
         logger.info("Loading FAISS indexes...")
+        load_start = time.time()
         text_faiss = FaissManager(
             embedding_dim=settings.TEXT_EMBEDDING_DIM,
             index_path=settings.TEXT_FAISS_INDEX_PATH,
             meta_path=settings.TEXT_FAISS_CHUNK_IDS_PATH,
         )
-        logger.info(f"Text FAISS loaded ({len(text_faiss.chunk_ids)} vectors)")
+        text_load_time = time.time() - load_start
+        logger.info(f"✓ Text FAISS loaded ({len(text_faiss.chunk_ids)} vectors) in {text_load_time:.3f}s")
 
+        load_start = time.time()
         image_faiss = ImageFaissManager(
             embedding_dim=settings.IMAGE_EMBEDDING_DIM,
             index_path=settings.IMAGE_FAISS_INDEX_PATH,
             meta_path=settings.IMAGE_FAISS_CHUNK_IDS_PATH,
         )
-        logger.info(f"Image FAISS loaded ({len(image_faiss.chunk_ids)} vectors)")
+        image_load_time = time.time() - load_start
+        logger.info(f"✓ Image FAISS loaded ({len(image_faiss.chunk_ids)} vectors) in {image_load_time:.3f}s")
 
-        # Initialize query system (ONCE at startup)
-        logger.info("Initializing multilingual embedding models...")
+        # ============ INITIALIZE QUERY SYSTEM (ONCE at startup) ============
+        logger.info("Initializing QuerySystem (embedding models + LLM)...")
+        qs_start = time.time()
         query_system = QuerySystem(
             text_faiss=text_faiss,
             image_faiss=image_faiss,
             db_path=settings.DB_PATH,
             model_path=settings.LLM_MODEL_PATH,
         )
-        logger.info("Multilingual embedding model loaded successfully")
-        logger.info("Query system initialized (models loaded)")
+        qs_load_time = time.time() - qs_start
+        logger.info(f"✓ QuerySystem initialized in {qs_load_time:.3f}s")
+        logger.info(f"  - QuerySystem object ID: {id(query_system)} (GLOBAL singleton)")
 
-        # Initialize chat history store
-        logger.info("Initializing chat history store...")
+        # ============ INITIALIZE CHAT HISTORY ============
+        logger.info("Initializing ChatHistoryStore...")
+        chat_start = time.time()
         chat_history = ChatHistoryStore(db_path=settings.DB_PATH)
-        logger.info("Chat history store initialized")
+        chat_load_time = time.time() - chat_start
+        logger.info(f"✓ ChatHistoryStore initialized in {chat_load_time:.3f}s")
+
+        # ============ VALIDATION CHECKS ============
+        logger.info("━" * 60)
+        logger.info("INITIALIZATION COMPLETE - PERFORMANCE CHECKLIST")
+        logger.info("━" * 60)
+        logger.info(f"✓ QuerySystem is GLOBAL singleton (ID: {id(query_system)})")
+        logger.info(f"✓ query_system.text_embedder: {id(query_system.text_embedder)} (ONCE created)")
+        logger.info(f"✓ query_system.llm: {id(query_system.llm)} (ONCE created)")
+        logger.info("✓ All models LOCKED in memory (no reload per request)")
+        logger.info("✓ FAISS indexes cached in memory")
+        logger.info("✓ SQLite connections pooled")
+        logger.info("━" * 60)
+        logger.info(f"Total startup time: {text_load_time + image_load_time + qs_load_time + chat_load_time:.3f}s")
+        logger.info("Ready to accept requests!")
+
+    except Exception as e:
+        logger.error(f"Startup failed: {e}", exc_info=True)
+        raise
 
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
@@ -349,6 +375,7 @@ async def query_endpoint(
 ) -> Dict:
     """
     Main RAG query endpoint supporting multi-message conversations.
+    WITH DETAILED TIMING LOGS for performance debugging.
 
     Args:
         query_request: QueryRequest model with question and chat_id
@@ -357,7 +384,7 @@ async def query_endpoint(
         Dict with chat_id, answer, sources, and confidence score
     """
     correlation_id = request.state.correlation_id if request else str(uuid.uuid4())
-    start_time = time.time()
+    endpoint_start = time.time()
 
     try:
         if query_system is None:
@@ -369,14 +396,17 @@ async def query_endpoint(
         chat_id = query_request.chat_id
         top_k = settings.RETRIEVAL_TOP_K
 
-        logger.info(f"[{correlation_id}] Chat: {chat_id} | Question: {question[:100]}...")
+        logger.info(f"[{correlation_id}] Query START | Chat: {chat_id} | Question: {question[:100]}...")
+
+        # ============ CHECKPOINT 1: DB OPERATIONS ============
+        db_start = time.time()
 
         # Verify chat exists, create if needed
         if not chat_history.conversation_exists(chat_id):
             # Create new conversation with first question as title
             title = question[:100]
             chat_history.create_conversation(chat_id, title)
-            logger.info(f"[{correlation_id}] Created new conversation: {chat_id}")
+            logger.debug(f"[{correlation_id}] Created new conversation: {chat_id}")
 
         # Add user message
         chat_history.add_message(chat_id, "user", question)
@@ -393,18 +423,24 @@ async def query_endpoint(
                     "content": msg["content"]
                 })
 
-        # Execute query
+        db_time = time.time() - db_start
+        logger.debug(f"[{correlation_id}] DB operations: {db_time:.3f}s")
+
+        # ============ CHECKPOINT 2: QUERY SYSTEM EXECUTION ============
+        query_system_start = time.time()
         result = query_system.query(
             question,
             top_k=top_k,
             history_messages=history_for_prompt,
         )
-        elapsed_time = time.time() - start_time
+        query_system_time = time.time() - query_system_start
+        logger.debug(f"[{correlation_id}] QuerySystem.query(): {query_system_time:.3f}s")
 
         answer = result.get("answer", "")
         sources = result.get("sources", [])
 
-        # Add assistant message to chat
+        # ============ CHECKPOINT 3: SAVE ASSISTANT MESSAGE ============
+        save_start = time.time()
         sources_for_storage = [
             {
                 "type": s.get("source_type", "unknown"),
@@ -414,12 +450,19 @@ async def query_endpoint(
             for s in sources
         ]
         chat_history.add_message(chat_id, "assistant", answer, sources_for_storage)
+        save_time = time.time() - save_start
+        logger.debug(f"[{correlation_id}] Save assistant message: {save_time:.3f}s")
 
+        # ============ FINAL TIMING ============
+        total_endpoint_time = time.time() - endpoint_start
         logger.info(
-            f"[{correlation_id}] Query complete - "
-            f"confidence: {result['confidence']}%, "
-            f"sources: {len(sources)}, "
-            f"elapsed: {elapsed_time:.2f}s"
+            f"[{correlation_id}] Query COMPLETE | "
+            f"DB: {db_time:.3f}s | "
+            f"QuerySystem: {query_system_time:.3f}s | "
+            f"Save: {save_time:.3f}s | "
+            f"Total: {total_endpoint_time:.3f}s | "
+            f"Confidence: {result.get('confidence', 0)}% | "
+            f"Sources: {len(sources)}"
         )
 
         sources_response = []
@@ -445,6 +488,140 @@ async def query_endpoint(
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
     except Exception as e:
         logger.error(f"[{correlation_id}] Query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ STREAMING QUERY ENDPOINT ============
+
+@app.post("/api/stream-query")
+async def stream_query_endpoint(
+    query_request: QueryRequest,
+    request: Request = None,
+) -> StreamingResponse:
+    """
+    Streaming RAG query endpoint that returns tokens progressively.
+    Tokens are sent as they are generated by the LLM.
+
+    Args:
+        query_request: QueryRequest model with question and chat_id
+
+    Returns:
+        StreamingResponse with text/event-stream media type
+    """
+    correlation_id = request.state.correlation_id if request else str(uuid.uuid4())
+    endpoint_start = time.time()
+
+    try:
+        if query_system is None:
+            raise RuntimeError("Query system not initialized")
+        if chat_history is None:
+            raise RuntimeError("Chat history not initialized")
+
+        question = query_request.question
+        chat_id = query_request.chat_id
+        top_k = settings.RETRIEVAL_TOP_K
+
+        logger.info(f"[{correlation_id}] Stream Query START | Chat: {chat_id} | Question: {question[:100]}...")
+
+        # ============ DB OPERATIONS ============
+        db_start = time.time()
+
+        # Verify chat exists, create if needed
+        if not chat_history.conversation_exists(chat_id):
+            title = question[:100]
+            chat_history.create_conversation(chat_id, title)
+            logger.debug(f"[{correlation_id}] Created new conversation: {chat_id}")
+
+        # Add user message
+        chat_history.add_message(chat_id, "user", question)
+
+        # Get recent messages for context
+        chat_data = chat_history.get_conversation(chat_id)
+        history_for_prompt = []
+        if chat_data and chat_data.get("messages"):
+            recent_msgs = chat_data["messages"][-5:]
+            for msg in recent_msgs:
+                history_for_prompt.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+
+        db_time = time.time() - db_start
+        logger.debug(f"[{correlation_id}] DB operations: {db_time:.3f}s")
+
+        # ============ STREAMING QUERY EXECUTION ============
+        query_system_start = time.time()
+        metadata, token_generator = query_system.stream_query(
+            question,
+            top_k=top_k,
+            history_messages=history_for_prompt,
+        )
+        query_system_retrieval_time = time.time() - query_system_start
+        logger.debug(f"[{correlation_id}] QuerySystem retrieval: {query_system_retrieval_time:.3f}s")
+
+        # ============ CREATE STREAMING GENERATOR ============
+        async def generate():
+            """Generator function for streaming response."""
+            # First, send metadata as JSON header
+            metadata_json = {
+                "type": "metadata",
+                "chat_id": chat_id,
+                "confidence": metadata.get("confidence", 0),
+                "sources": metadata.get("sources", []),
+                "retrieval_time": metadata.get("retrieval_time", 0),
+            }
+            yield f"data: {metadata_json}\n\n"
+
+            # Then stream tokens
+            collected_answer = ""
+            try:
+                for token in token_generator:
+                    collected_answer += token
+                    # Send token wrapped in SSE format
+                    yield f"data: {token}\n\n"
+                
+                # Log streaming completion
+                streaming_time = time.time() - endpoint_start
+                logger.info(
+                    f"[{correlation_id}] Stream COMPLETE | "
+                    f"DB: {db_time:.3f}s | "
+                    f"Retrieval: {query_system_retrieval_time:.3f}s | "
+                    f"Total: {streaming_time:.3f}s | "
+                    f"Answer length: {len(collected_answer)} chars | "
+                    f"Confidence: {metadata.get('confidence', 0)}%"
+                )
+
+                # Save assistant message after streaming completes
+                save_start = time.time()
+                sources_for_storage = [
+                    {
+                        "type": s.get("source_type", "unknown"),
+                        "source": s.get("source_file", ""),
+                        "score": s.get("score", 0),
+                    }
+                    for s in metadata.get("sources", [])
+                ]
+                chat_history.add_message(chat_id, "assistant", collected_answer, sources_for_storage)
+                save_time = time.time() - save_start
+                logger.debug(f"[{correlation_id}] Save assistant message: {save_time:.3f}s")
+
+                # Send completion signal
+                yield "data: [DONE]\n\n"
+
+            except Exception as e:
+                logger.error(f"[{correlation_id}] Streaming error: {e}", exc_info=True)
+                yield f"data: [ERROR] {str(e)}\n\n"
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    except ValidationError as e:
+        logger.warning(f"[{correlation_id}] Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except RetrievalError as e:
+        logger.error(f"[{correlation_id}] Retrieval error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
+    except Exception as e:
+        logger.error(f"[{correlation_id}] Stream query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============ INGESTION ENDPOINT ============

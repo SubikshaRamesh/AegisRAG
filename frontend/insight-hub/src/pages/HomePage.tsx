@@ -12,6 +12,7 @@ import {
   VolumeX,
   X,
   Plus,
+  Loader,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ type Message = {
   timestamp: Date;
   confidence?: number;
   sources?: Source[];
+  isStreaming?: boolean; // Mark if this message is still streaming
 };
 
 const HomePage = () => {
@@ -47,12 +49,46 @@ const HomePage = () => {
   const [noteText, setNoteText] = useState("");
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewFilename, setPreviewFilename] = useState("");
+  const [streamingAnswer, setStreamingAnswer] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
 
   const createAndNavigateChat = async () => {
     const newChat = await api.createChat();
     setCurrentChatId(newChat.chat_id);
     setMessages([]);
     navigate(`/?chatId=${newChat.chat_id}`, { replace: true });
+  };
+
+  // ChatGPT-style typing animation
+  const typeWriter = (text: string, metadata: any, speed = 10) => {
+    setIsTyping(true);
+    setStreamingAnswer("");
+    let index = 0;
+
+    const interval = setInterval(() => {
+      index++;
+      setStreamingAnswer(text.slice(0, index));
+
+      if (index >= text.length) {
+        clearInterval(interval);
+        setIsTyping(false);
+
+        // Push final assistant message to history AFTER typing completes
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: text,
+            timestamp: new Date(),
+            sources: metadata?.sources || [],
+            confidence: metadata?.confidence,
+          },
+        ]);
+
+        setStreamingAnswer("");
+      }
+    }, speed);
   };
 
   const loadConversation = async (id: string) => {
@@ -143,7 +179,10 @@ const HomePage = () => {
 
     setError(null);
     setIsLoading(true);
+    setStreamingAnswer("");
+    setIsTyping(false);
 
+    // Add user message immediately
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: "user",
@@ -152,21 +191,42 @@ const HomePage = () => {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    const userQuery = query;
     setQuery("");
 
     try {
-      const response = await api.askQuestion(query, currentChatId);
-      const assistantMessage: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: response.answer,
-        timestamp: new Date(),
-        confidence: response.confidence,
-        sources: response.sources,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+      let fullText = ""; // Collect all tokens here
+      let retrievedMetadata: any = null; // Store metadata for final message
+
+      // Use streaming API
+      await api.streamQuestion(
+        userQuery,
+        currentChatId,
+        // onToken callback - collect tokens silently
+        (token: string) => {
+          fullText += token;
+        },
+        // onMetadata callback - store for later
+        (metadata: any) => {
+          retrievedMetadata = metadata;
+        },
+        // onError callback
+        (error: Error) => {
+          setError(`Streaming error: ${error.message}`);
+          setStreamingAnswer("");
+          setIsTyping(false);
+        },
+        // onComplete callback - start typing animation (which pushes message)
+        () => {
+          if (fullText) {
+            typeWriter(fullText, retrievedMetadata, 10);
+          }
+        }
+      );
     } catch (queryError) {
       setError(extractErrorMessage(queryError));
+      setStreamingAnswer("");
+      setIsTyping(false);
     } finally {
       setIsLoading(false);
     }
@@ -246,7 +306,7 @@ const HomePage = () => {
 
       {/* Messages area */}
       <div className="flex-1 overflow-auto p-6 space-y-6">
-        {messages.length === 0 && !isLoading && !isChatLoading && (
+        {messages.length === 0 && !isLoading && !isChatLoading && !isTyping && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="w-20 h-20 rounded-2xl bg-accent flex items-center justify-center mb-6">
               <MessageSquare className="w-10 h-10 text-primary" />
@@ -260,16 +320,33 @@ const HomePage = () => {
           </div>
         )}
 
-        {(isLoading || isChatLoading) && (
-          <div className="bg-card rounded-2xl border border-border p-6 shadow-card animate-pulse">
-            <div className="h-4 bg-muted rounded w-3/4 mb-3" />
-            <div className="h-4 bg-muted rounded w-1/2 mb-3" />
-            <div className="h-4 bg-muted rounded w-2/3" />
+        {(isLoading || isChatLoading) && !isTyping && (
+          <div className="bg-card rounded-2xl border border-border p-6 shadow-card">
+            <div className="flex items-center gap-3">
+              <Loader className="w-5 h-5 text-primary animate-spin" />
+              <span className="text-sm text-muted-foreground">
+                {isChatLoading ? "Loading chat..." : "Streaming response..."}
+              </span>
+            </div>
           </div>
         )}
         {error && (
           <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
             {error}
+          </div>
+        )}
+
+        {/* Typing Animation Display - ABOVE message history */}
+        {isTyping && (
+          <div className="bg-card rounded-2xl border border-border p-6 shadow-card">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 space-y-3">
+                <div className="text-foreground leading-relaxed whitespace-pre-wrap">
+                  {streamingAnswer}
+                  <span className="inline-block w-2 h-5 ml-1 bg-primary rounded-sm animate-cursor" />
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -285,37 +362,44 @@ const HomePage = () => {
               <div className="bg-card rounded-2xl border border-border p-6 shadow-card hover:shadow-card-hover transition-shadow duration-300">
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <div className="flex-1 space-y-3">
-                    <p className="text-foreground leading-relaxed whitespace-pre-wrap">
+                    <div className="text-foreground leading-relaxed whitespace-pre-wrap">
                       {msg.content}
-                    </p>
+                      {msg.isStreaming && (
+                        <span className="inline-block w-2 h-5 ml-1 bg-primary rounded-sm animate-pulse" />
+                      )}
+                    </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`text-xs px-2.5 py-1 rounded-full ${confidenceClass(
-                          msg.confidence
-                        )}`}
-                      >
-                        Confidence {formatConfidence(msg.confidence)}
-                      </span>
+                      {msg.confidence !== undefined && msg.confidence > 0 && (
+                        <span
+                          className={`text-xs px-2.5 py-1 rounded-full ${confidenceClass(
+                            msg.confidence
+                          )}`}
+                        >
+                          Confidence {formatConfidence(msg.confidence)}
+                        </span>
+                      )}
                       <span className="text-xs text-muted-foreground">
                         {msg.timestamp.toLocaleTimeString()}
                       </span>
                     </div>
                   </div>
-                  <button
-                    onClick={() => toggleVoice(msg.id)}
-                    className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 ${
-                      isPlaying === msg.id
-                        ? "gradient-sky text-primary-foreground shadow-sky"
-                        : "bg-accent text-accent-foreground hover:bg-primary hover:text-primary-foreground"
-                    }`}
-                    title={isPlaying === msg.id ? "Stop reading" : "Read aloud"}
-                  >
-                    {isPlaying === msg.id ? (
-                      <VolumeX className="w-5 h-5" />
-                    ) : (
-                      <Volume2 className="w-5 h-5" />
-                    )}
-                  </button>
+                  {!msg.isStreaming && (
+                    <button
+                      onClick={() => toggleVoice(msg.id)}
+                      className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 ${
+                        isPlaying === msg.id
+                          ? "gradient-sky text-primary-foreground shadow-sky"
+                          : "bg-accent text-accent-foreground hover:bg-primary hover:text-primary-foreground"
+                      }`}
+                      title={isPlaying === msg.id ? "Stop reading" : "Read aloud"}
+                    >
+                      {isPlaying === msg.id ? (
+                        <VolumeX className="w-5 h-5" />
+                      ) : (
+                        <Volume2 className="w-5 h-5" />
+                      )}
+                    </button>
+                  )}
                 </div>
 
                 {msg.sources && msg.sources.length > 0 && (

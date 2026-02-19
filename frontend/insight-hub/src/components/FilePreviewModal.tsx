@@ -1,4 +1,5 @@
-import { X } from "lucide-react";
+import { X, Download } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface FilePreviewModalProps {
   isOpen: boolean;
@@ -100,13 +101,11 @@ export const FilePreviewModal = ({
             Please download to view.
           </p>
         </div>
-        <a
-          href={apiPath}
-          download
-          className="px-6 py-2.5 bg-primary text-primary-foreground rounded-lg font-medium hover:opacity-90 transition-opacity"
-        >
-          Download {ext.toUpperCase()}
-        </a>
+        <Button asChild>
+          <a href={apiPath} download>
+            Download {ext.toUpperCase()}
+          </a>
+        </Button>
       </div>
     );
   };
@@ -127,13 +126,21 @@ export const FilePreviewModal = ({
             <h2 className="text-lg font-semibold text-foreground truncate flex-1">
               {filename}
             </h2>
-            <button
-              onClick={onClose}
-              className="p-2 hover:bg-accent rounded-lg transition-colors text-muted-foreground hover:text-foreground"
-              title="Close"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <Button asChild size="sm" variant="outline">
+                <a href={apiPath} download>
+                  <Download className="w-4 h-4" />
+                  Download
+                </a>
+              </Button>
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-accent rounded-lg transition-colors text-muted-foreground hover:text-foreground"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
           {/* Content */}

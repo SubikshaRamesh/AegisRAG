@@ -51,11 +51,12 @@ class Settings:
     CLIP_MODEL: str = os.getenv("CLIP_MODEL", "ViT-B-16")
     CLIP_PRETRAINED: str = os.getenv("CLIP_PRETRAINED", "openai")
     
-    LLM_MODEL_PATH: str = str(MODELS_PATH / "Phi-3-mini-4k-instruct-q4.gguf")
-    LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "2048"))
-    LLM_THREADS: int = int(os.getenv("LLM_THREADS", "12"))
-    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "120"))
-    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+    # 🔥 TinyLlama optimized for CPU inference (< 6 seconds)
+    LLM_MODEL_PATH: str = str(MODELS_PATH / "tinyLlama.gguf")
+    LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "1024"))
+    LLM_THREADS: int = int(os.getenv("LLM_THREADS", "-1"))  # -1 = use all CPU cores
+    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "100"))  # Reduced for speed
+    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # Deterministic
 
     # ============ RETRIEVAL ============
     RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", "3"))

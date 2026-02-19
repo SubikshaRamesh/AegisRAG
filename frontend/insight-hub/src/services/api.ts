@@ -133,6 +133,89 @@ class ApiService {
     });
   }
 
+  async streamQuestion(
+    question: string,
+    chatId: string,
+    onToken: (token: string) => void,
+    onMetadata?: (metadata: any) => void,
+    onError?: (error: Error) => void,
+    onComplete?: () => void
+  ): Promise<void> {
+    try {
+      const response = await fetch("/api/stream-query", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ question, chat_id: chatId }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("Response body not readable");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          // Process any remaining buffer
+          if (buffer.trim()) {
+            this._processStreamChunk(buffer.trim(), onToken, onMetadata, onError);
+          }
+          onComplete?.();
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete lines from buffer
+        const lines = buffer.split("\n\n");
+        buffer = lines[lines.length - 1]; // Keep incomplete line in buffer
+
+        for (let i = 0; i < lines.length - 1; i++) {
+          const line = lines[i].trim();
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6); // Remove "data: " prefix
+            if (data && data !== "[DONE]") {
+              this._processStreamChunk(data, onToken, onMetadata, onError);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      onError?.(err);
+    }
+  }
+
+  private _processStreamChunk(
+    data: string,
+    onToken: (token: string) => void,
+    onMetadata?: (metadata: any) => void,
+    onError?: (error: Error) => void
+  ): void {
+    try {
+      // Try to parse as JSON (metadata)
+      const parsed = JSON.parse(data);
+      if (parsed.type === "metadata") {
+        onMetadata?.(parsed);
+      } else if (parsed.type === "error") {
+        onError?.(new Error(parsed.message || "Unknown error"));
+      }
+    } catch {
+      // Not JSON, treat as token text
+      onToken(data);
+    }
+  }
+
   async uploadFile(
     file: File,
     onProgress?: (progress: number) => void
