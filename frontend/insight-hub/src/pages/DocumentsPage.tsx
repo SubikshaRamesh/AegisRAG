@@ -14,27 +14,63 @@ import {
   Image as ImageIcon,
 } from "lucide-react";
 import { api } from "@/services/api";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
+import type { FileInventoryItem } from "@/services/api";
 
 interface Document {
-  id: number;
   name: string;
   type: string;
-  size: string;
   uploadedAt: string;
-  category: string;
-  chunks?: number;
+  chunks: number;
 }
 
-// We'll keep mock data for now until you have a documents list endpoint
-const mockDocuments: Document[] = [
-  { id: 1, name: "annual-report-2024.pdf", type: "pdf", size: "2.4 MB", uploadedAt: "2024-12-15", category: "Reports", chunks: 15 },
-  { id: 2, name: "meeting-notes.docx", type: "document", size: "156 KB", uploadedAt: "2024-12-14", category: "Notes", chunks: 8 },
-  { id: 3, name: "presentation-q4.pptx", type: "document", size: "5.1 MB", uploadedAt: "2024-12-13", category: "Presentations", chunks: 12 },
-  { id: 4, name: "podcast-episode-12.mp3", type: "audio", size: "45 MB", uploadedAt: "2024-12-12", category: "Audio", chunks: 24 },
-  { id: 5, name: "tutorial-video.mp4", type: "video", size: "120 MB", uploadedAt: "2024-12-11", category: "Video", chunks: 32 },
-];
-
 type FilterType = "all" | "video" | "text" | "image" | "audio";
+
+// Helper function to infer file type from extension
+const inferFileType = (filename: string): string => {
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  
+  // Video formats
+  if (["mp4", "avi", "mov", "mkv", "wmv", "flv", "webm"].includes(ext)) {
+    return "video";
+  }
+  
+  // Audio formats
+  if (["mp3", "wav", "ogg", "m4a", "flac", "aac", "wma"].includes(ext)) {
+    return "audio";
+  }
+  
+  // Image formats
+  if (["jpg", "jpeg", "png", "gif", "bmp", "svg", "webp", "tiff", "ico"].includes(ext)) {
+    return "image";
+  }
+  
+  // Document/text formats
+  if (["pdf", "doc", "docx", "txt", "rtf", "odt"].includes(ext)) {
+    return "pdf";
+  }
+  
+  if (["ppt", "pptx"].includes(ext)) {
+    return "document";
+  }
+  
+  return "text";
+};
+
+// Transform API response to Document format
+const transformFileToDocument = (file: FileInventoryItem): Document => {
+  const type = inferFileType(file.file_name);
+  const uploadedAt = file.last_ingested_timestamp 
+    ? new Date(file.last_ingested_timestamp).toISOString().split("T")[0]
+    : "Unknown";
+  
+  return {
+    name: file.file_name,
+    type,
+    uploadedAt,
+    chunks: file.total_chunks,
+  };
+};
 
 const getFileIcon = (type: string) => {
   switch (type) {
@@ -73,40 +109,55 @@ const DocumentsPage = () => {
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [filter, setFilter] = useState<FilterType>("all");
+  const [documents, setDocuments] = useState<Document[]>([]);
   const [systemStatus, setSystemStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewFilename, setPreviewFilename] = useState("");
 
-  // Fetch system status to get vector counts
+  // Fetch documents and system status on mount
   useEffect(() => {
-    const fetchStatus = async () => {
+    const fetchData = async () => {
+      setLoading(true);
+      setError(null);
+      
       try {
-        const status = await api.getStatus();
+        // Fetch both documents and status in parallel
+        const [filesResponse, status] = await Promise.all([
+          api.getFiles(),
+          api.getStatus(),
+        ]);
+        
+        // Transform API response to Document format
+        const transformedDocs = filesResponse.files.map(transformFileToDocument);
+        setDocuments(transformedDocs);
         setSystemStatus(status);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to fetch system status";
+        const message = error instanceof Error ? error.message : "Failed to load documents";
         setError(message);
+        console.error("Failed to fetch documents:", error);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchStatus();
+    fetchData();
   }, []);
 
   // counts
   const counts = useMemo(() => {
     return {
-      all: mockDocuments.length,
-      video: mockDocuments.filter((d) => d.type === "video").length,
-      audio: mockDocuments.filter((d) => d.type === "audio").length,
-      image: mockDocuments.filter((d) => d.type === "image").length,
-      text: mockDocuments.filter((d) => isTextFile(d.type)).length,
+      all: documents.length,
+      video: documents.filter((d) => d.type === "video").length,
+      audio: documents.filter((d) => d.type === "audio").length,
+      image: documents.filter((d) => d.type === "image").length,
+      text: documents.filter((d) => isTextFile(d.type)).length,
     };
-  }, []);
+  }, [documents]);
 
   const filtered = useMemo(() => {
-    return mockDocuments.filter((d) => {
+    return documents.filter((d) => {
       const matchSearch = d.name.toLowerCase().includes(search.toLowerCase());
       const matchFilter =
         filter === "all"
@@ -121,19 +172,18 @@ const DocumentsPage = () => {
 
       return matchSearch && matchFilter;
     });
-  }, [search, filter]);
+  }, [search, filter, documents]);
 
   const handleOpenDocument = (doc: Document) => {
-    // You can navigate to a document view or open in modal
-    console.log("Opening document:", doc);
-    // For now, just show a message
-    alert(`Opening ${doc.name} - This would take you to the document viewer`);
+    setPreviewFilename(doc.name);
+    setIsPreviewOpen(true);
   };
 
   const handleDownloadDocument = (doc: Document) => {
-    // You would implement actual download logic here
-    console.log("Downloading document:", doc);
-    alert(`Downloading ${doc.name} - This would download the file`);
+    const link = document.createElement("a");
+    link.href = `/api/files/${encodeURIComponent(doc.name)}`;
+    link.download = doc.name;
+    link.click();
   };
 
   if (loading) {
@@ -142,6 +192,17 @@ const DocumentsPage = () => {
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
           <p className="mt-4 text-muted-foreground">Loading documents...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 flex items-center justify-center h-64">
+        <div className="text-center">
+          <p className="text-rose-400 font-medium mb-2">Error loading documents</p>
+          <p className="text-sm text-muted-foreground">{error}</p>
         </div>
       </div>
     );
@@ -164,11 +225,6 @@ const DocumentsPage = () => {
               </span>
             )}
           </p>
-          {error && (
-            <p className="mt-2 text-xs text-rose-300">
-              {error}
-            </p>
-          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -239,7 +295,7 @@ const DocumentsPage = () => {
 
             return (
               <div
-                key={doc.id}
+                key={doc.name}
                 className="bg-card border border-border rounded-2xl p-5 shadow-card hover:shadow-card-hover transition-all duration-300 hover:-translate-y-0.5 group"
               >
                 <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center mb-4">
@@ -251,14 +307,12 @@ const DocumentsPage = () => {
                 </h3>
 
                 <p className="text-xs text-muted-foreground mb-2">
-                  {doc.size} · {doc.uploadedAt}
+                  {doc.uploadedAt}
                 </p>
                 
-                {doc.chunks && (
-                  <p className="text-xs text-muted-foreground mb-4">
-                    {doc.chunks} chunks processed
-                  </p>
-                )}
+                <p className="text-xs text-muted-foreground mb-4">
+                  {doc.chunks} chunks processed
+                </p>
 
                 <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                   <button 
@@ -288,7 +342,7 @@ const DocumentsPage = () => {
 
             return (
               <div
-                key={doc.id}
+                key={doc.name}
                 className="flex items-center gap-4 p-4 bg-card border border-border rounded-xl shadow-card hover:shadow-card-hover transition-all duration-200 group"
               >
                 <div className="w-10 h-10 rounded-lg bg-accent flex items-center justify-center flex-shrink-0">
@@ -300,8 +354,7 @@ const DocumentsPage = () => {
                     {doc.name}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {doc.size} · {doc.uploadedAt}
-                    {doc.chunks && ` · ${doc.chunks} chunks`}
+                    {doc.uploadedAt} · {doc.chunks} chunks
                   </p>
                 </div>
 
@@ -327,12 +380,26 @@ const DocumentsPage = () => {
         </div>
       )}
 
-      {filtered.length === 0 && (
+      {filtered.length === 0 && documents.length === 0 && (
         <div className="text-center py-12">
           <FolderOpen className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-          <p className="text-muted-foreground">No documents found</p>
+          <p className="text-muted-foreground">No documents uploaded yet.</p>
         </div>
       )}
+
+      {filtered.length === 0 && documents.length > 0 && (
+        <div className="text-center py-12">
+          <FolderOpen className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+          <p className="text-muted-foreground">No documents match your search</p>
+        </div>
+      )}
+
+      {/* File Preview Modal */}
+      <FilePreviewModal
+        isOpen={isPreviewOpen}
+        filename={previewFilename}
+        onClose={() => setIsPreviewOpen(false)}
+      />
     </div>
   );
 };

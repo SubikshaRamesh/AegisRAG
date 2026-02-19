@@ -3,10 +3,10 @@ import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { Home, Upload, FileText, Clock, LogOut, Menu, X, ChevronRight } from "lucide-react";
 
 const navItems = [
-  { icon: Home, label: "Home", path: "/dashboard" },
-  { icon: Upload, label: "Upload", path: "/dashboard/upload" },
-  { icon: FileText, label: "Documents", path: "/dashboard/documents" },
-  { icon: Clock, label: "History", path: "/dashboard/history" },
+  { icon: Home, label: "Home", path: "/" },
+  { icon: Upload, label: "Upload", path: "/upload" },
+  { icon: FileText, label: "Documents", path: "/documents" },
+  { icon: Clock, label: "History", path: "/history" },
 ];
 
 const DashboardLayout = () => {
@@ -16,7 +16,8 @@ const DashboardLayout = () => {
 
   const handleLogout = () => {
     localStorage.removeItem("isLoggedIn");
-    navigate("/");
+    localStorage.removeItem("userName");
+    navigate("/login");
   };
 
   const userName = localStorage.getItem("userName") || "User";

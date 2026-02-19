@@ -5,6 +5,7 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  base: "/",
   server: {
     host: "::",
     port: 3000,
@@ -15,9 +16,15 @@ export default defineConfig(({ mode }) => ({
       "/api": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
+  },
+  build: {
+    outDir: "dist",
+    assetsDir: "assets",
+    sourcemap: false,
+    minify: "terser",
+    target: "esnext",
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

@@ -14,10 +14,10 @@ const AuthPage = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Mock auth — will connect to backend later
+    // Mock auth — no backend required
     localStorage.setItem("isLoggedIn", "true");
     localStorage.setItem("userName", name || "User");
-    navigate("/dashboard");
+    navigate("/");
   };
 
   return (

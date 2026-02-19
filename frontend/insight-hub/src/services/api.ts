@@ -5,9 +5,38 @@ export interface Source {
 }
 
 export interface QueryResponse {
+  chat_id: string;
   answer: string;
   confidence: number;
   sources: Source[];
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+  sources?: Source[];
+}
+
+export interface ChatHistory {
+  chat_id: string;
+  messages: ChatMessage[];
+}
+
+export interface CreateChatResponse {
+  chat_id: string;
+  created_at: string;
+}
+
+export interface ConversationItem {
+  chat_id: string;
+  title: string;
+  created_at: string;
+}
+
+export interface ListConversationsResponse {
+  status: string;
+  conversations: ConversationItem[];
 }
 
 export interface UploadResponse {
@@ -40,18 +69,30 @@ export interface StatusResponse {
   };
 }
 
-export interface HistoryMessage {
-  role: "user" | "assistant";
-  content: string;
-  timestamp?: number;
+export interface FileInventoryItem {
+  file_name: string;
+  total_chunks: number;
+  first_ingested_timestamp: string;
+  last_ingested_timestamp: string;
 }
 
-export interface HistoryResponse {
+export interface FilesInventoryResponse {
   status: string;
-  session_id: string;
   count: number;
-  history: HistoryMessage[];
+  files: FileInventoryItem[];
 }
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+
 
 class ApiService {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -65,16 +106,30 @@ class ApiService {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `API request failed: ${response.statusText}`);
+      const message = error.detail || `API request failed: ${response.statusText}`;
+      throw new ApiError(message, response.status);
     }
 
     return response.json();
   }
 
-  async askQuestion(question: string, sessionId: string): Promise<QueryResponse> {
+  async createChat(): Promise<CreateChatResponse> {
+    return this.request("/chat/new", { method: "POST" });
+  }
+
+  async loadConversation(chatId: string): Promise<ChatHistory> {
+    return this.request(`/history/${encodeURIComponent(chatId)}`);
+  }
+
+  async listConversations(limit: number = 50, offset: number = 0): Promise<ListConversationsResponse> {
+    const query = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
+    return this.request(`/history?${query}`);
+  }
+
+  async askQuestion(question: string, chatId: string): Promise<QueryResponse> {
     return this.request("/query", {
       method: "POST",
-      body: JSON.stringify({ question, session_id: sessionId }),
+      body: JSON.stringify({ question, chat_id: chatId }),
     });
   }
 
@@ -122,8 +177,8 @@ class ApiService {
     return this.request("/status");
   }
 
-  async getHistory(sessionId: string): Promise<HistoryResponse> {
-    return this.request(`/history/${encodeURIComponent(sessionId)}`);
+  async getFiles(): Promise<FilesInventoryResponse> {
+    return this.request("/files");
   }
 }
 

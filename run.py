@@ -5,6 +5,10 @@ Runs the API server with auto-reload.
 """
 
 import os
+
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+
 import sys
 import subprocess
 from pathlib import Path

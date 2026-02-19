@@ -8,7 +8,6 @@ from core.vector_store.image_faiss_manager import ImageFaissManager
 from core.schema.chunk import Chunk
 from core.llm.generator import OfflineLLM
 from core.storage.metadata_store import MetadataStore
-from core.utils.translator import Translator
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,7 +30,6 @@ class QuerySystem:
         image_faiss: ImageFaissManager,
         db_path: str = "workspaces/default/storage/metadata/chunks.db",
         model_path: str = "models/Phi-3-mini-4k-instruct-q4.gguf",
-        translator: Optional[Translator] = None,
     ):
         self.text_embedder = EmbeddingGenerator()
         self.clip_embedder = CLIPEmbeddingGenerator()
@@ -41,7 +39,6 @@ class QuerySystem:
 
         self.llm = OfflineLLM(model_path=model_path)
         self.store = MetadataStore(db_path)
-        self.translator = translator
 
     def query(
         self,
@@ -51,38 +48,15 @@ class QuerySystem:
     ) -> Dict:
         """
         Uses top_k=3 for stable retrieval.
-        Supports multilingual queries with local Tamil-to-English translation and normalization.
+        Supports multilingual queries by embedding the original question directly.
         """
 
-        # -------------------------------------------------
-        # 0️⃣ LOCAL TRANSLATION (Tamil → English)
-        # -------------------------------------------------
-        # If translator is available and question contains non-ASCII characters (likely Tamil),
-        # translate to English first for better embedding alignment.
-        translated_question = question
-        if self.translator and self.translator.needs_translation(question):
-            translated_question = self.translator.translate(question)
-            logger.info(f"[TRANSLATE] Question translated: {question[:50]}... → {translated_question[:50]}...")
-        else:
-            translated_question = question
-
-        # -------------------------------------------------
-        # 1️⃣ MULTILINGUAL QUERY NORMALIZATION
-        # -------------------------------------------------
-        # Lightweight prefix to improve multilingual retrieval accuracy.
-        # The embedding model aligns better with English semantic patterns.
-        # This hint encourages the model to translate the query semantically
-        # during embedding generation, improving retrieval across languages.
-        # Original question is preserved for logging/display.
-        normalized_question = f"Translate this to English and answer: {translated_question}"
         logger.info(f"[QUERY] Original: {question[:100]}...")
-        logger.info(f"[QUERY] Translated: {translated_question[:100]}...")
-        logger.info(f"[QUERY] Normalized for embedding: {normalized_question[:100]}...")
 
         # -------------------------------------------------
         # 2️⃣ TEXT SEARCH
         # -------------------------------------------------
-        text_query_embedding = self.text_embedder.embed([normalized_question])
+        text_query_embedding = self.text_embedder.embed([question])
         text_query_embedding = np.array(text_query_embedding).astype("float32")
 
         text_results = self.text_faiss.search(
@@ -96,8 +70,7 @@ class QuerySystem:
         image_results = []
 
         if len(self.image_faiss.chunk_ids) > 0:
-            # Image CLIP embedding also uses normalized question
-            image_query_embedding = self.clip_embedder.embed_text([normalized_question])
+            image_query_embedding = self.clip_embedder.embed_text([question])
             image_query_embedding = np.array(image_query_embedding).astype("float32")
 
             image_results = self.image_faiss.search(

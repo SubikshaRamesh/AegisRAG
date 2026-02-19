@@ -23,7 +23,8 @@ class EmbeddingGenerator:
         # Loaded once at startup, reused for all embeddings
         logger.info("Loading multilingual embedding model...")
         self.model = SentenceTransformer(
-            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            "models/embedding",
+            local_files_only=True
         )
         logger.info("Multilingual embedding model loaded successfully")
 

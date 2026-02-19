@@ -1,67 +1,46 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Clock, MessageSquare, ChevronRight, Search } from "lucide-react";
 
-import { api, HistoryMessage } from "@/services/api";
-
-interface ChatHistoryItem {
-  id: string;
-  query: string;
-  preview: string;
-  timestamp: string;
-  sources: number;
-}
+import { api, ConversationItem } from "@/services/api";
+import { extractErrorMessage } from "@/utils/errorHandler";
 
 const HistoryPage = () => {
-  const [history, setHistory] = useState<HistoryMessage[]>([]);
+  const navigate = useNavigate();
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const sessionId = sessionStorage.getItem("aegisrag_session_id");
-    if (!sessionId) {
-      setIsLoading(false);
-      return;
-    }
-
-    const loadHistory = async () => {
+    const loadConversations = async () => {
       try {
-        const response = await api.getHistory(sessionId);
-        setHistory(response.history || []);
+        const response = await api.listConversations();
+        setConversations(response.conversations || []);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load history");
+        setError(extractErrorMessage(err));
       } finally {
         setIsLoading(false);
       }
     };
 
-    loadHistory();
+    loadConversations();
   }, []);
 
-  const items = useMemo<ChatHistoryItem[]>(() => {
-    return history
-      .filter((msg) => msg.role === "assistant")
-      .map((msg, index) => {
-        const query = history[index * 2]?.content || "Question";
-        const preview = msg.content.slice(0, 160) + (msg.content.length > 160 ? "..." : "");
-        const date = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
+  const filteredConversations = useMemo(() => {
+    return conversations.filter((conv) => {
+      if (!search.trim()) return true;
+      return conv.title.toLowerCase().includes(search.toLowerCase());
+    });
+  }, [conversations, search]);
 
-        return {
-          id: `${index}-${date.getTime()}`,
-          query,
-          preview,
-          timestamp: date.toLocaleString(),
-          sources: 0,
-        };
-      })
-      .filter((item) => {
-        if (!search.trim()) return true;
-        return (
-          item.query.toLowerCase().includes(search.toLowerCase()) ||
-          item.preview.toLowerCase().includes(search.toLowerCase())
-        );
-      });
-  }, [history, search]);
+  const formatDate = (dateString: string) => {
+    try {
+      return new Date(dateString).toLocaleString();
+    } catch {
+      return dateString;
+    }
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -79,18 +58,18 @@ const HistoryPage = () => {
       <div className="relative max-w-md">
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
         <input
-          placeholder="Search your history..."
+          placeholder="Search your chats..."
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           className="w-full h-12 pl-12 pr-4 rounded-xl bg-card border border-border text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary focus:ring-2 focus:ring-ring/20 transition-all duration-200"
         />
       </div>
 
-      {/* History list */}
+      {/* Conversations list */}
       <div className="space-y-3">
         {isLoading && (
           <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
-            Loading session history...
+            Loading chat history...
           </div>
         )}
         {error && (
@@ -98,15 +77,21 @@ const HistoryPage = () => {
             {error}
           </div>
         )}
-        {!isLoading && !error && items.length === 0 && (
+        {!isLoading && !error && conversations.length === 0 && (
           <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
-            No session history found yet.
+            No chat history yet. Start a new chat to begin!
           </div>
         )}
-        {items.map((item) => (
+        {!isLoading && !error && filteredConversations.length === 0 && conversations.length > 0 && (
+          <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
+            No conversations match your search.
+          </div>
+        )}
+        {filteredConversations.map((conv) => (
           <button
-            key={item.id}
-            className="w-full text-left p-5 bg-card border border-border rounded-2xl shadow-card hover:shadow-card-hover transition-all duration-300 hover:-translate-y-0.5 group"
+            key={conv.chat_id}
+            onClick={() => navigate(`/?chatId=${encodeURIComponent(conv.chat_id)}`, { replace: false })}
+            className="w-full text-left p-5 bg-card border border-border rounded-2xl shadow-card hover:shadow-card-hover transition-all duration-300 hover:-translate-y-0.5 group cursor-pointer"
           >
             <div className="flex items-start gap-4">
               <div className="w-10 h-10 rounded-xl bg-accent flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -115,20 +100,15 @@ const HistoryPage = () => {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-4 mb-1">
                   <h3 className="text-sm font-semibold text-foreground truncate">
-                    {item.query}
+                    {conv.title}
                   </h3>
                   <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    {item.timestamp}
+                    {formatDate(conv.created_at)}
                   </span>
                 </div>
-                <p className="text-sm text-muted-foreground line-clamp-2">
-                  {item.preview}
+                <p className="text-xs text-muted-foreground">
+                  ID: {conv.chat_id.substring(0, 8)}...
                 </p>
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs px-2 py-0.5 rounded-md bg-accent text-accent-foreground">
-                    {item.sources} source{item.sources > 1 ? "s" : ""}
-                  </span>
-                </div>
               </div>
               <ChevronRight className="w-5 h-5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-2" />
             </div>

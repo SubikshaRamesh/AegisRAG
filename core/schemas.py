@@ -15,11 +15,11 @@ class QueryRequest(BaseModel):
         max_length=1000,
         description="The question to ask"
     )
-    session_id: str = Field(
+    chat_id: str = Field(
         ...,
         min_length=1,
         max_length=128,
-        description="Client session identifier"
+        description="Unique chat identifier (UUID)"
     )
 
     @validator("question")
@@ -28,10 +28,10 @@ class QueryRequest(BaseModel):
             raise ValueError("Question cannot be empty or whitespace only")
         return v.strip()
 
-    @validator("session_id")
-    def session_id_not_empty(cls, v):
+    @validator("chat_id")
+    def chat_id_not_empty(cls, v):
         if not v.strip():
-            raise ValueError("Session ID cannot be empty or whitespace only")
+            raise ValueError("Chat ID cannot be empty or whitespace only")
         return v.strip()
 
 
@@ -46,6 +46,7 @@ class Source(BaseModel):
 class QueryResponse(BaseModel):
     """Query response model."""
 
+    chat_id: str = Field(..., description="Chat identifier")
     answer: str = Field(..., description="The generated answer")
     sources: List[Source] = Field(
         default_factory=list,
@@ -57,6 +58,37 @@ class QueryResponse(BaseModel):
         le=100,
         description="Confidence score (0-100)"
     )
+
+
+class ChatCreateResponse(BaseModel):
+    """Chat creation response model."""
+
+    chat_id: str = Field(..., description="Unique chat identifier")
+    created_at: str = Field(..., description="ISO timestamp")
+
+
+class ChatMessage(BaseModel):
+    """Chat message model."""
+
+    role: str = Field(..., description="Message role (user or assistant)")
+    content: str = Field(..., description="Message content")
+    timestamp: float = Field(..., description="Message timestamp (unix)")
+    sources: Optional[List[Source]] = Field(None, description="Message sources")
+
+
+class ChatHistoryResponse(BaseModel):
+    """Chat history response model."""
+
+    chat_id: str = Field(..., description="Chat identifier")
+    messages: List[ChatMessage] = Field(..., description="Ordered messages in conversation")
+
+
+class ConversationSummary(BaseModel):
+    """Conversation summary for list endpoint."""
+
+    chat_id: str = Field(..., description="Chat identifier")
+    title: str = Field(..., description="First user message (truncated)")
+    created_at: str = Field(..., description="ISO timestamp")
 
 
 class IngestionResponse(BaseModel):

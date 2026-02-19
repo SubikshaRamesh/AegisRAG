@@ -13,8 +13,9 @@ from contextlib import asynccontextmanager
 from threading import RLock
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from config.settings import settings
@@ -25,14 +26,13 @@ from core.errors import (
     RetrievalError,
     ValidationError,
 )
-from core.schemas import QueryRequest
+from core.schemas import QueryRequest, ChatCreateResponse, ChatHistoryResponse, ConversationSummary
 from core.pipeline.query_system import QuerySystem
 from core.vector_store.faiss_manager import FaissManager
 from core.vector_store.image_faiss_manager import ImageFaissManager
 from core.ingestion.ingestion_manager import ingest
 from core.storage.metadata_store import MetadataStore
 from core.storage.chat_history_store import ChatHistoryStore
-from core.utils.translator import Translator
 
 logger = get_logger(__name__)
 
@@ -41,7 +41,6 @@ logger = get_logger(__name__)
 
 query_system: QuerySystem = None
 chat_history: ChatHistoryStore = None
-translator: Translator = None
 chat_sessions: Dict[str, List[Dict[str, str]]] = {}
 chat_sessions_lock = RLock()
 
@@ -81,11 +80,12 @@ def startup():
     """Initialize query system and chat history on startup."""
     global query_system
     global chat_history
-    global translator
-
     try:
         settings.validate()
         logger.info("Configuration validated")
+
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
         # Load existing FAISS indexes
         logger.info("Loading FAISS indexes...")
@@ -103,11 +103,6 @@ def startup():
         )
         logger.info(f"Image FAISS loaded ({len(image_faiss.chunk_ids)} vectors)")
 
-        # Initialize translator for Tamil-to-English translations
-        logger.info("Loading Tamil-English translator...")
-        translator = Translator()
-        logger.info("Tamil-English translator loaded successfully")
-
         # Initialize query system (ONCE at startup)
         logger.info("Initializing multilingual embedding models...")
         query_system = QuerySystem(
@@ -115,7 +110,6 @@ def startup():
             image_faiss=image_faiss,
             db_path=settings.DB_PATH,
             model_path=settings.LLM_MODEL_PATH,
-            translator=translator,
         )
         logger.info("Multilingual embedding model loaded successfully")
         logger.info("Query system initialized (models loaded)")
@@ -180,7 +174,7 @@ app.middleware("http")(add_correlation_id)
 
 # ============ HEALTH & STATUS ============
 
-@app.get("/health")
+@app.get("/api/health")
 async def health_check() -> Dict:
     """
     Health check endpoint.
@@ -206,7 +200,7 @@ async def health_check() -> Dict:
         )
 
 
-@app.get("/status")
+@app.get("/api/status")
 async def status() -> Dict:
     """
     System status endpoint.
@@ -233,21 +227,134 @@ async def status() -> Dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============ CHAT ENDPOINTS ============
+
+@app.post("/api/chat/new")
+async def create_chat() -> ChatCreateResponse:
+    """
+    Create a new chat conversation.
+
+    Returns:
+        Chat ID and creation timestamp
+    """
+    try:
+        chat_id = str(uuid.uuid4())
+        
+        # Chat will be created when first message is added
+        # (or we can create it here with an empty title)
+        logger.info(f"New chat created: {chat_id}")
+
+        from datetime import datetime
+        created_at = datetime.utcnow().isoformat()
+
+        return ChatCreateResponse(
+            chat_id=chat_id,
+            created_at=created_at
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to create chat: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/history")
+async def list_conversations(limit: int = 50, offset: int = 0) -> Dict:
+    """
+    Get list of all conversations ordered by newest first.
+
+    Query Parameters:
+        limit: Maximum number of conversations (default: 50)
+        offset: Number to skip (default: 0)
+
+    Returns:
+        List of conversation summaries with chat_id, title, created_at
+    """
+    try:
+        if chat_history is None:
+            raise RuntimeError("Chat history not initialized")
+
+        conversations = chat_history.list_conversations(limit=limit, offset=offset)
+
+        return {
+            "status": "success",
+            "count": len(conversations),
+            "limit": limit,
+            "offset": offset,
+            "conversations": conversations
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list conversations: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/history/{chat_id}")
+async def get_chat_history(chat_id: str) -> ChatHistoryResponse:
+    """
+    Get full conversation by chat ID.
+    Returns empty messages array if chat doesn't exist (graceful fallback).
+
+    Args:
+        chat_id: Unique chat identifier
+
+    Returns:
+        Chat ID and ordered list of messages (empty if not found)
+    """
+    try:
+        if not chat_id or not chat_id.strip():
+            raise ValidationError("Chat ID cannot be empty")
+
+        if chat_history is None:
+            raise RuntimeError("Chat history not initialized")
+
+        chat_data = chat_history.get_conversation(chat_id)
+        
+        # Graceful fallback: return empty messages array if chat not found
+        if not chat_data:
+            logger.info(f"Chat not found: {chat_id} - returning empty conversation")
+            return ChatHistoryResponse(
+                chat_id=chat_id,
+                messages=[]
+            )
+
+        messages = []
+        for msg in chat_data.get("messages", []):
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"],
+                "timestamp": msg["timestamp"],
+                "sources": msg.get("sources")
+            })
+
+        return ChatHistoryResponse(
+            chat_id=chat_id,
+            messages=messages
+        )
+
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get chat history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============ QUERY ENDPOINT ============
 
-@app.post("/query")
+@app.post("/api/query")
 async def query_endpoint(
     query_request: QueryRequest,
     request: Request = None,
 ) -> Dict:
     """
-    Main RAG query endpoint.
+    Main RAG query endpoint supporting multi-message conversations.
 
     Args:
-        query_request: QueryRequest model with question and top_k
+        query_request: QueryRequest model with question and chat_id
 
     Returns:
-        Dict with answer, sources, and confidence score
+        Dict with chat_id, answer, sources, and confidence score
     """
     correlation_id = request.state.correlation_id if request else str(uuid.uuid4())
     start_time = time.time()
@@ -255,15 +362,36 @@ async def query_endpoint(
     try:
         if query_system is None:
             raise RuntimeError("Query system not initialized")
+        if chat_history is None:
+            raise RuntimeError("Chat history not initialized")
 
         question = query_request.question
-        session_id = query_request.session_id
+        chat_id = query_request.chat_id
         top_k = settings.RETRIEVAL_TOP_K
 
-        logger.info(f"[{correlation_id}] Question: {question[:100]}...")
+        logger.info(f"[{correlation_id}] Chat: {chat_id} | Question: {question[:100]}...")
 
-        append_session_message(session_id, "user", question)
-        history_for_prompt = get_session_history(session_id)[-3:]
+        # Verify chat exists, create if needed
+        if not chat_history.conversation_exists(chat_id):
+            # Create new conversation with first question as title
+            title = question[:100]
+            chat_history.create_conversation(chat_id, title)
+            logger.info(f"[{correlation_id}] Created new conversation: {chat_id}")
+
+        # Add user message
+        chat_history.add_message(chat_id, "user", question)
+
+        # Get recent messages for context (last 3 pairs = 6 messages)
+        chat_data = chat_history.get_conversation(chat_id)
+        history_for_prompt = []
+        if chat_data and chat_data.get("messages"):
+            # Take last 5 messages (not including the one we just added)
+            recent_msgs = chat_data["messages"][-5:]
+            for msg in recent_msgs:
+                history_for_prompt.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
 
         # Execute query
         result = query_system.query(
@@ -274,37 +402,39 @@ async def query_endpoint(
         elapsed_time = time.time() - start_time
 
         answer = result.get("answer", "")
-        append_session_message(session_id, "assistant", answer)
+        sources = result.get("sources", [])
 
-        # Save to chat history
-        try:
-            chat_history.save_interaction(
-                question=question,
-                answer=result.get("answer", ""),
-                sources=result.get("sources", [])
-            )
-        except Exception as e:
-            logger.warning(f"[{correlation_id}] Failed to save chat history: {e}")
+        # Add assistant message to chat
+        sources_for_storage = [
+            {
+                "type": s.get("source_type", "unknown"),
+                "source": s.get("source_file", ""),
+                "score": s.get("score", 0),
+            }
+            for s in sources
+        ]
+        chat_history.add_message(chat_id, "assistant", answer, sources_for_storage)
 
         logger.info(
             f"[{correlation_id}] Query complete - "
             f"confidence: {result['confidence']}%, "
-            f"sources: {len(result.get('sources', []))}, "
+            f"sources: {len(sources)}, "
             f"elapsed: {elapsed_time:.2f}s"
         )
 
-        sources = []
-        for source in result.get("sources", []):
-            sources.append({
+        sources_response = []
+        for source in sources:
+            sources_response.append({
                 "type": source.get("source_type", "unknown"),
                 "source": source.get("source_file", ""),
                 "score": source.get("score", 0),
             })
 
         return {
+            "chat_id": chat_id,
             "answer": answer,
             "confidence": result.get("confidence", 0),
-            "sources": sources,
+            "sources": sources_response,
         }
 
     except ValidationError as e:
@@ -316,7 +446,6 @@ async def query_endpoint(
     except Exception as e:
         logger.error(f"[{correlation_id}] Query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============ INGESTION ENDPOINT ============
 
@@ -472,7 +601,7 @@ async def handle_ingest(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ingest")
+@app.post("/api/ingest")
 async def ingest_endpoint(
     file: UploadFile = File(...),
     file_type: str = None,
@@ -483,7 +612,7 @@ async def ingest_endpoint(
     return await handle_ingest(file, file_type, background_tasks, request)
 
 
-@app.post("/upload")
+@app.post("/api/upload")
 async def upload_endpoint(
     file: UploadFile = File(...),
     file_type: str = None,
@@ -514,142 +643,33 @@ async def global_exception_handler(request, exc):
     )
 
 
-# ============ ROOT ENDPOINT ============
+# ============ API INFO ENDPOINT ============
 
-@app.get("/")
-async def root() -> Dict:
-    """Root endpoint with API information."""
+@app.get("/api/info")
+async def api_info() -> Dict:
+    """API information endpoint."""
     return {
         "name": "AegisRAG API",
         "version": "1.0.0",
         "description": "Fully offline multimodal RAG system",
         "endpoints": {
-            "GET /health": "Health check",
-            "GET /status": "System status",
-            "POST /query": "Query the knowledge base",
-            "POST /upload": "Upload and ingest a file",
-            "POST /ingest": "Ingest a file (legacy)",
-            "GET /history/{session_id}": "Get in-memory session history",
-            "GET /history": "Get persisted chat history",
-            "GET /history/search": "Search chat history",
-            "DELETE /history": "Clear chat history",
-            "GET /files": "Get file inventory",
-            "GET /files/search": "Search files",
+            "GET /api/health": "Health check",
+            "GET /api/status": "System status",
+            "POST /api/chat/new": "Create a new chat conversation",
+            "POST /api/query": "Send message to chat (requires chat_id)",
+            "GET /api/history": "List all conversations",
+            "GET /api/history/{chat_id}": "Get full conversation messages",
+            "POST /api/upload": "Upload and ingest a file",
+            "POST /api/ingest": "Ingest a file (legacy)",
+            "GET /api/files": "Get file inventory",
+            "GET /api/files/search": "Search files",
         },
     }
 
 
-# ============ CHAT HISTORY ENDPOINTS ============
-
-@app.get("/history")
-async def get_history(limit: int = 100, offset: int = 0) -> Dict:
-    """
-    Get chat history ordered by newest first.
-
-    Query Parameters:
-        limit: Maximum number of records (default: 100)
-        offset: Number of records to skip (default: 0)
-
-    Returns:
-        List of chat history records with question, answer, sources, timestamp
-    """
-    try:
-        if chat_history is None:
-            raise RuntimeError("Chat history not initialized")
-
-        history = chat_history.get_history(limit=limit, offset=offset)
-
-        return {
-            "status": "success",
-            "count": len(history),
-            "limit": limit,
-            "offset": offset,
-            "history": history
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to retrieve chat history: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/history/{session_id}")
-async def get_session_history_endpoint(session_id: str) -> Dict:
-    """Get in-memory session history for a specific session."""
-    if not session_id or not session_id.strip():
-        raise HTTPException(status_code=400, detail="Session ID is required")
-
-    history = get_session_history(session_id)
-
-    return {
-        "status": "success",
-        "session_id": session_id,
-        "count": len(history),
-        "history": history,
-    }
-
-
-@app.get("/history/search")
-async def search_history(query: str) -> Dict:
-    """
-    Search chat history by question or answer.
-
-    Query Parameters:
-        query: Search term (case-insensitive)
-
-    Returns:
-        List of matching chat history records
-    """
-    try:
-        if not query or not query.strip():
-            raise ValidationError("Search query cannot be empty")
-
-        if chat_history is None:
-            raise RuntimeError("Chat history not initialized")
-
-        results = chat_history.search_history(query=query.strip())
-
-        return {
-            "status": "success",
-            "query": query,
-            "count": len(results),
-            "results": results
-        }
-
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to search chat history: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/history")
-async def clear_history() -> Dict:
-    """
-    Delete all chat history.
-
-    Returns:
-        Number of records deleted
-    """
-    try:
-        if chat_history is None:
-            raise RuntimeError("Chat history not initialized")
-
-        deleted_count = chat_history.clear_history()
-
-        return {
-            "status": "success",
-            "message": f"Deleted {deleted_count} chat history records",
-            "deleted_count": deleted_count
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to clear chat history: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ============ FILE INVENTORY ENDPOINTS ============
 
-@app.get("/files")
+@app.get("/api/files")
 async def get_files_inventory() -> Dict:
     """
     Get inventory of all ingested files.
@@ -679,7 +699,7 @@ async def get_files_inventory() -> Dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/files/search")
+@app.get("/api/files/search")
 async def search_files(query: str) -> Dict:
     """
     Search for ingested files by name.
@@ -709,6 +729,64 @@ async def search_files(query: str) -> Dict:
     except Exception as e:
         logger.error(f"Failed to search files: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/files/{file_path:path}")
+async def serve_file(file_path: str) -> FileResponse:
+    """
+    Serve uploaded files safely from local storage.
+    Prevents directory traversal attacks by validating paths.
+
+    Args:
+        file_path: Relative file path (URL-decoded)
+
+    Returns:
+        File content as FileResponse
+    """
+    try:
+        # Decode filename
+        from urllib.parse import unquote
+        filename = unquote(file_path)
+
+        # Prevent directory traversal attacks
+        if ".." in filename or filename.startswith("/"):
+            raise HTTPException(status_code=403, detail="Access denied: invalid path")
+
+        # Construct safe file path
+        file_full_path = settings.UPLOADS_PATH / filename
+
+        # Ensure file exists and is within UPLOADS_PATH
+        if not file_full_path.exists():
+            logger.warning(f"File not found: {filename}")
+            raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+        # Verify path is within UPLOADS_PATH (prevent directory traversal)
+        try:
+            file_full_path.resolve().relative_to(settings.UPLOADS_PATH.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied: path outside upload directory")
+
+        logger.info(f"Serving file: {filename}")
+        return FileResponse(
+            path=file_full_path,
+            filename=filename,
+            media_type="application/octet-stream"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to serve file {file_path}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to serve file")
+
+
+# ============ FRONTEND (STATIC) ============
+
+app.mount(
+    "/",
+    StaticFiles(directory="frontend/insight-hub/dist", html=True),
+    name="frontend",
+)
 
 
 # ============ MAIN ============

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/services/api";
+import { extractErrorMessage } from "@/utils/errorHandler";
 
 interface UploadedFile {
   id: number;
@@ -77,7 +78,7 @@ const UploadPage = () => {
           );
         })
         .catch((error) => {
-          const message = error instanceof Error ? error.message : "Upload failed";
+          const message = extractErrorMessage(error);
           setFiles((prev) =>
             prev.map((f) =>
               f.id === nf.id

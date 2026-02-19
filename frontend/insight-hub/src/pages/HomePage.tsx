@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
 
 import {
   Download,
-  FileText,
   MessageSquare,
   Send,
   Sparkles,
@@ -11,10 +11,14 @@ import {
   Volume2,
   VolumeX,
   X,
+  Plus,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { api, Source } from "@/services/api";
+import { api, ApiError, Source } from "@/services/api";
+import { SourceLink } from "@/components/SourceLink";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
+import { extractErrorMessage } from "@/utils/errorHandler";
 
 
 type Message = {
@@ -27,27 +31,76 @@ type Message = {
 };
 
 const HomePage = () => {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const chatId = searchParams.get("chatId");
+  
+  const [currentChatId, setCurrentChatId] = useState<string | null>(chatId);
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showNotes, setShowNotes] = useState(false);
   const [noteText, setNoteText] = useState("");
-  const [sessionId, setSessionId] = useState<string>("");
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewFilename, setPreviewFilename] = useState("");
+
+  const createAndNavigateChat = async () => {
+    const newChat = await api.createChat();
+    setCurrentChatId(newChat.chat_id);
+    setMessages([]);
+    navigate(`/?chatId=${newChat.chat_id}`, { replace: true });
+  };
+
+  const loadConversation = async (id: string) => {
+    setIsChatLoading(true);
+    try {
+      const chatData = await api.loadConversation(id);
+
+      const loadedMessages = chatData.messages.map((msg) => ({
+        id: crypto.randomUUID(),
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+        timestamp: new Date(msg.timestamp * 1000),
+        sources: msg.sources,
+      }));
+
+      setMessages(loadedMessages);
+      setCurrentChatId(id);
+    } catch (loadError) {
+      if (loadError instanceof ApiError && loadError.status === 404) {
+        console.warn(`Chat ${id} not found, creating new chat`);
+        await createAndNavigateChat();
+        return;
+      }
+
+      console.error("Failed to load conversation:", loadError);
+      setError(extractErrorMessage(loadError));
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const existing = sessionStorage.getItem("aegisrag_session_id");
-    if (existing) {
-      setSessionId(existing);
-      return;
-    }
+    const initChat = async () => {
+      try {
+        if (chatId) {
+          await loadConversation(chatId);
+        } else {
+          await createAndNavigateChat();
+        }
+      } catch (err) {
+        console.error("Failed to initialize chat:", err);
+        setError(extractErrorMessage(err));
+        setIsChatLoading(false);
+      }
+    };
 
-    const generated = crypto.randomUUID();
-    sessionStorage.setItem("aegisrag_session_id", generated);
-    setSessionId(generated);
-  }, []);
+    initChat();
+  }, [chatId, navigate]);
 
   const groupedMessages = useMemo(() => {
     return [...messages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -78,7 +131,7 @@ const HomePage = () => {
       setIsLoading(true);
       await api.uploadFile(first);
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Upload failed");
+      setError(extractErrorMessage(uploadError));
     } finally {
       setIsLoading(false);
     }
@@ -86,7 +139,7 @@ const HomePage = () => {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim() || !sessionId) return;
+    if (!query.trim() || !currentChatId) return;
 
     setError(null);
     setIsLoading(true);
@@ -102,7 +155,7 @@ const HomePage = () => {
     setQuery("");
 
     try {
-      const response = await api.askQuestion(query, sessionId);
+      const response = await api.askQuestion(query, currentChatId);
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -113,9 +166,24 @@ const HomePage = () => {
       };
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (queryError) {
-      setError(queryError instanceof Error ? queryError.message : "Query failed");
+      setError(extractErrorMessage(queryError));
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleNewChat = async () => {
+    try {
+      setIsChatLoading(true);
+      const newChat = await api.createChat();
+      navigate(`/?chatId=${newChat.chat_id}`);
+      setMessages([]);
+      setError(null);
+      setQuery("");
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setIsChatLoading(false);
     }
   };
 
@@ -127,11 +195,17 @@ const HomePage = () => {
       const msg = messages.find((m) => m.id === id);
       if (msg) {
         const utterance = new SpeechSynthesisUtterance(msg.content);
+        utterance.lang = "en-US";
         utterance.onend = () => setIsPlaying(null);
         window.speechSynthesis.speak(utterance);
         setIsPlaying(id);
       }
     }
+  };
+
+  const handleOpenPreview = (filename: string) => {
+    setPreviewFilename(filename);
+    setIsPreviewOpen(true);
   };
 
   const formatConfidence = (value?: number) => {
@@ -149,19 +223,30 @@ const HomePage = () => {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="p-6 border-b border-border bg-card">
-        <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-          <Sparkles className="w-6 h-6 text-primary" />
-          Ask Your Documents
-        </h1>
-        <p className="text-muted-foreground mt-1">
-          Query your uploaded files and get AI-powered answers
-        </p>
+      <div className="p-6 border-b border-border bg-card flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
+            <Sparkles className="w-6 h-6 text-primary" />
+            Ask Your Documents
+          </h1>
+          <p className="text-muted-foreground mt-1">
+            Query your uploaded files and get AI-powered answers
+          </p>
+        </div>
+        <Button
+          onClick={handleNewChat}
+          disabled={isChatLoading}
+          className="h-10 px-4 gradient-sky text-primary-foreground shadow-sky hover:opacity-90 transition-opacity rounded-xl flex items-center gap-2"
+          title="Start a new chat"
+        >
+          <Plus className="w-5 h-5" />
+          New Chat
+        </Button>
       </div>
 
       {/* Messages area */}
       <div className="flex-1 overflow-auto p-6 space-y-6">
-        {messages.length === 0 && !isLoading && (
+        {messages.length === 0 && !isLoading && !isChatLoading && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="w-20 h-20 rounded-2xl bg-accent flex items-center justify-center mb-6">
               <MessageSquare className="w-10 h-10 text-primary" />
@@ -175,7 +260,7 @@ const HomePage = () => {
           </div>
         )}
 
-        {isLoading && (
+        {(isLoading || isChatLoading) && (
           <div className="bg-card rounded-2xl border border-border p-6 shadow-card animate-pulse">
             <div className="h-4 bg-muted rounded w-3/4 mb-3" />
             <div className="h-4 bg-muted rounded w-1/2 mb-3" />
@@ -240,19 +325,13 @@ const HomePage = () => {
                     </p>
                     <div className="grid gap-3 sm:grid-cols-2">
                       {msg.sources.map((source, i) => (
-                        <div
+                        <SourceLink
                           key={`${source.source}-${i}`}
-                          className="rounded-xl border border-border/80 bg-muted/40 p-3 text-sm"
-                        >
-                          <div className="flex items-center gap-2 text-foreground">
-                            <FileText className="w-4 h-4 text-primary" />
-                            <span className="truncate">{source.source}</span>
-                          </div>
-                          <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-                            <span className="uppercase">{source.type}</span>
-                            <span>Score {source.score.toFixed(1)}%</span>
-                          </div>
-                        </div>
+                          filename={source.source}
+                          type={source.type}
+                          score={source.score}
+                          onPreview={handleOpenPreview}
+                        />
                       ))}
                     </div>
                   </div>
@@ -343,6 +422,12 @@ const HomePage = () => {
     </div>
   </div>
 )}
+
+      <FilePreviewModal
+        isOpen={isPreviewOpen}
+        filename={previewFilename}
+        onClose={() => setIsPreviewOpen(false)}
+      />
 
     </div>
   );

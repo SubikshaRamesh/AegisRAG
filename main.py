@@ -29,6 +29,9 @@ def open_image(path):
 def build_multimodal_system():
     print("Initializing system...")
 
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
     # Load existing FAISS indexes (NO ingestion, NO rebuilding)
     text_faiss = FaissManager(
         embedding_dim=384,

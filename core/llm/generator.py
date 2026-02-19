@@ -1,5 +1,6 @@
 from llama_cpp import Llama
 from typing import List, Dict
+from langdetect import detect
 
 
 class OfflineLLM:
@@ -19,23 +20,36 @@ class OfflineLLM:
         history: List[Dict] = None,
     ) -> str:
         """
-        Generate a strictly grounded answer from retrieved contexts.
-        
-        Multilingual support:
-        - Question may be in any language
-        - Always responds in English for stability
-        - Uses only provided context (no speculation)
+        Fully offline multilingual-safe grounded generation.
         """
 
-        # --------------------------------------------------
-        # If no context, immediately return fallback
-        # --------------------------------------------------
+        # -----------------------------------------
+        # 1️⃣ If no context → fallback
+        # -----------------------------------------
         if not contexts:
             return "Information not found in knowledge base."
 
-        # --------------------------------------------------
-        # Build structured context block
-        # --------------------------------------------------
+        # -----------------------------------------
+        # 2️⃣ Detect language of question
+        # -----------------------------------------
+        try:
+            detected_lang = detect(question)
+        except:
+            detected_lang = "en"
+
+        lang_map = {
+            "en": "English",
+            "ta": "Tamil",
+            "es": "Spanish",
+            "fr": "French",
+            "de": "German",
+        }
+
+        language_name = lang_map.get(detected_lang, "English")
+
+        # -----------------------------------------
+        # 3️⃣ Build context block
+        # -----------------------------------------
         context_text = ""
 
         for i, c in enumerate(contexts, 1):
@@ -46,58 +60,97 @@ class OfflineLLM:
                 f"{c['text']}\n\n"
             )
 
-        # --------------------------------------------------
-        # MULTILINGUAL-SAFE EXTRACTION PROMPT
-        # --------------------------------------------------
+        # -----------------------------------------
+        # 4️⃣ Conversation history (last 3)
+        # -----------------------------------------
         history_block = ""
         if history:
             formatted_lines = []
-            for msg in history:
+            for msg in history[-3:]:
                 role = msg.get("role", "user")
                 content = msg.get("content", "").strip()
                 if not content:
                     continue
                 formatted_lines.append(f"{role.title()}: {content}")
+
             if formatted_lines:
-                history_block = "\nConversation History (last 3 messages):\n" + "\n".join(formatted_lines) + "\n"
+                history_block = (
+                    "\nConversation History:\n"
+                    + "\n".join(formatted_lines)
+                    + "\n"
+                )
 
-        prompt = f"""You are a helpful AI assistant.
+        # -----------------------------------------
+        # 5️⃣ Strict Prompt
+        # -----------------------------------------
+        prompt = f"""
+You are a strict extraction assistant.
 
-The user may ask questions in any language.
-You MUST always respond in English.
-Use only the provided context to answer.
+You MUST answer ONLY in {language_name}.
+Do NOT switch languages.
+Do NOT translate unless explicitly asked.
+Use ONLY the provided context.
+Do NOT repeat the question.
+Do NOT mention the context.
 
-Rules:
-- Extract relevant information directly from the context
-- Do NOT add new explanations or interpretations
-- Do NOT speculate or make assumptions
-- Do NOT extend beyond what is in the context
-- If the answer is not found in the context, respond exactly with:
-"Information not found in knowledge base."
-- Always respond in English, regardless of the question language
+If answer is not found in context, respond EXACTLY:
+Information not found in knowledge base.
+
 {history_block}
+
 Question:
 {question}
 
 Context:
 {context_text}
 
-Answer (in English):
+Answer:
 """
 
-        # --------------------------------------------------
-        # Generate
-        # --------------------------------------------------
+        # -----------------------------------------
+        # 6️⃣ Generate (deterministic)
+        # -----------------------------------------
         output = self.llm(
             prompt,
             max_tokens=150,
-            temperature=0.1,
-            stop=["Question:", "</s>"]
+            temperature=0.0,
+            stop=["Question:", "</s>", "Context:"]
         )
 
         answer = output["choices"][0]["text"].strip()
 
         if not answer:
             return "Information not found in knowledge base."
+
+        # -----------------------------------------
+        # 7️⃣ HARD LANGUAGE ENFORCEMENT
+        # -----------------------------------------
+        try:
+            answer_lang = detect(answer)
+        except:
+            answer_lang = detected_lang
+
+        # If language mismatch → regenerate once
+        if answer_lang != detected_lang:
+            correction_prompt = f"""
+The previous answer was not in {language_name}.
+
+Rewrite the following answer STRICTLY in {language_name}.
+Do NOT add anything.
+
+Answer:
+{answer}
+"""
+
+            retry = self.llm(
+                correction_prompt,
+                max_tokens=150,
+                temperature=0.0
+            )
+
+            corrected = retry["choices"][0]["text"].strip()
+
+            if corrected:
+                return corrected
 
         return answer
