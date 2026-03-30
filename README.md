@@ -1,8 +1,10 @@
+
 # 🛡️ AegisRAG  
 ### Offline Multimodal Retrieval-Augmented Generation System
 
 🚀 A production-oriented, fully offline multimodal RAG system that ingests documents and media, builds hybrid retrieval indexes, and serves grounded, citation-backed answers via a FastAPI backend.
 
+---
 
 ## 📌 Overview
 
@@ -15,6 +17,7 @@ It enables users to:
 - Generate LLM-based answers grounded in retrieved evidence  
 - Receive citations and confidence scores  
 
+---
 
 ## ✨ Key Capabilities
 
@@ -30,10 +33,11 @@ It enables users to:
 - ⚡ Streaming responses (SSE)  
 - 🧩 Modular, production-oriented backend  
 
-
+---
 
 ## 🧠 System Architecture
 
+```
 
 User Query
 ↓
@@ -56,10 +60,13 @@ LLM (GGUF via llama.cpp)
 ↓
 Answer + Citations + Confidence
 
+```
 
+---
 
 ## 🔄 Data Ingestion Pipeline
 
+```
 
 Upload Files (PDF / DOCX / Image / Audio / Video)
 ↓
@@ -79,7 +86,9 @@ Storage:
 • FAISS (vectors)
 • SQLite (metadata + chat history)
 
+````
 
+---
 
 ## 📦 Supported Data Types
 
@@ -89,6 +98,7 @@ Storage:
 - 🎤 Audio (transcription via Whisper)  
 - 🎥 Video (audio extraction + frame sampling)  
 
+---
 
 ## 🔍 Retrieval & Answer Pipeline
 
@@ -110,7 +120,7 @@ Storage:
 - Sources  
 - Confidence score  
 
-
+---
 
 ## 🌐 API Endpoints
 
@@ -270,8 +280,8 @@ docker-compose up --build
 
 ## 👩‍💻 Author
 
-**Subiksha Ramesh**
-AI Developer | RAG Systems | Multimodal AI
+**Subiksha R **
+AI Developer | Retrieval-Augmented Generation (RAG) | Multimodal AI Systems
 
 ---
 
@@ -279,8 +289,5 @@ AI Developer | RAG Systems | Multimodal AI
 
 This project is licensed under the **MIT License**.
 
-```
 
- 
-👉 *“upgrade README visuals”* and I’ll transform this into a **standout GitHub project** 🚀
-```
+
