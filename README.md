@@ -22,7 +22,7 @@ It enables users to:
 
 ### 💬 Chat Interface
 <p align="center">
-  <img src="assets/chat.png" width="900"/>
+  <img src="images/chat.png" width="900"/>
 </p>
 <p align="center">
   Ask questions and receive grounded answers with citations and confidence scores.
@@ -32,7 +32,7 @@ It enables users to:
 
 ### 📤 Upload & Ingestion
 <p align="center">
-  <img src="assets/upload.png" width="900"/>
+  <img src="images/upload.png" width="900"/>
 </p>
 <p align="center">
   Upload documents and media for processing and indexing into the knowledge base.
@@ -42,7 +42,7 @@ It enables users to:
 
 ### 🕘 Chat History
 <p align="center">
-  <img src="assets/history.png" width="900"/>
+  <img src="images/history.png" width="900"/>
 </p>
 <p align="center">
   View past conversations and maintain contextual query sessions.
@@ -52,7 +52,7 @@ It enables users to:
 
 ### 📄 Document Explorer
 <p align="center">
-  <img src="assets/documents.png" width="900"/>
+  <img src="images/documents.png" width="900"/>
 </p>
 <p align="center">
   Browse, search, and manage ingested files and indexed content.
@@ -62,7 +62,7 @@ It enables users to:
 
 ### 📊 Analytics Dashboard
 <p align="center">
-  <img src="assets/analytics.png" width="900"/>
+  <img src="images/analytics.png" width="900"/>
 </p>
 <p align="center">
   Visualize system performance, retrieval metrics, and usage insights.
