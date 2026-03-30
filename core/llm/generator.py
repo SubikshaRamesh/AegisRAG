@@ -2,6 +2,7 @@ from llama_cpp import Llama
 from typing import List, Dict, Generator
 import os
 import time
+import re
 
 from core.logger import get_logger
 
@@ -9,35 +10,147 @@ logger = get_logger(__name__)
 
 
 class OfflineLLM:
-    """TinyLlama-optimized LLM for fast CPU inference."""
+    """
+    Production-ready Offline LLM optimized for Phi-3 GGUF.
+    Deterministic, context-grounded, and clean output generation.
+    """
 
     def __init__(self, model_path: str):
-        logger.info(f"[LLM] ⚡ Loading TinyLlama model from {model_path}...")
+
+        logger.info(f"[LLM] ⚡ Loading model from {model_path}...")
         load_start = time.time()
 
-        # 🔥 TinyLlama optimized for CPU
         cpu_threads = os.cpu_count() or 4
-        cpu_count_display = cpu_threads
 
         self.llm = Llama(
             model_path=model_path,
-            n_ctx=1024,                # Keep context window
-            n_threads=cpu_threads,     # 🔥 Use ALL CPU cores
-            n_batch=512,               # 🔥 Large batch for throughput
-            verbose=False,
-            n_gpu_layers=0,            # CPU-only (no GPU)
+            n_ctx=4096,
+            n_threads=cpu_threads,
+            n_batch=1024,
+            n_gpu_layers=0,
+            use_mlock=True,
+            use_mmap=True,
+            verbose=False
         )
 
         load_time = time.time() - load_start
-        logger.info(f"[LLM] ✓ Model loaded in {load_time:.3f}s")
-        logger.info(f"[LLM] 🔧 Configuration:")
-        logger.info(f"     - Model: TinyLlama-1.1B-Chat")
-        logger.info(f"     - CPU Threads: {cpu_count_display}")
-        logger.info(f"     - Batch Size: 512")
-        logger.info(f"     - Context Window: 1024")
-        logger.info(f"     - Mode: CPU-only (no GPU)")
-        logger.info(f"[LLM] Expected inference time: 2-6 seconds per query")
 
+        logger.info(f"[LLM] ✓ Model loaded in {load_time:.3f}s")
+        logger.info(f"[LLM] Threads: {cpu_threads}")
+        logger.info("[LLM] Deterministic RAG mode enabled")
+
+    # ==========================================================
+    # PROMPT BUILDER
+    # ==========================================================
+
+    def _build_prompt(self, question: str, context_text: str) -> str:
+
+        system_prompt = (
+            "You are a precise AI assistant.\n"
+            "Use ONLY the provided context to answer.\n"
+            "Combine information from all sources if needed.\n"
+            "Do NOT use external knowledge.\n"
+            "Do NOT repeat the question.\n"
+            "Return only the final answer.\n"
+            "If the context does not contain enough information respond with:\n"
+            "'Insufficient evidence in knowledge base.'"
+        )
+
+        user_prompt = (
+            f"Context:\n{context_text}\n\n"
+            f"Question:\n{question}\n\n"
+            "Provide only the answer."
+        )
+
+        prompt = (
+            "<|system|>\n"
+            f"{system_prompt}\n"
+            "<|user|>\n"
+            f"{user_prompt}\n"
+            "<|assistant|>\n"
+        )
+
+        return prompt
+
+    # ==========================================================
+    # OUTPUT CLEANING
+    # ==========================================================
+
+    def _clean_output(self, answer: str) -> str:
+
+        if not answer:
+            return ""
+
+        # Remove Phi tokens
+        answer = answer.replace("<|assistant|>", "")
+        answer = answer.replace("===<|assistant|>", "")
+
+        # Remove unwanted labels
+        answer = answer.replace("Answer:", "")
+        answer = answer.replace("Context:", "")
+
+        # Remove Phi artifacts
+        answer = answer.replace("[Response]:", "")
+        answer = answer.replace("- [Response]:", "")
+
+        # Remove fallback duplicates
+        answer = answer.replace(
+            "Insufficient evidence in knowledge base.",
+            ""
+        )
+
+        # Fix common model typo/token artifacts
+        answer = answer.replace("celestinas", "celestial")
+
+        # Remove role/control tokens if they leak into output
+        answer = re.sub(r"<\|[^|]+\|>", "", answer)
+
+        # Remove leading labels repeatedly (Answer:, Context:, Response:)
+        answer = re.sub(
+            r"(?im)^\s*(answer|context|response)\s*:\s*",
+            "",
+            answer,
+        )
+
+        answer = answer.strip()
+
+        # Remove duplicated consecutive phrases within a line.
+        # Example: "It launched successfully. It launched successfully."
+        phrase_pattern = re.compile(
+            r"\b(?P<phrase>[A-Za-z0-9][A-Za-z0-9 ,;:'\-]{3,}?[\.!?])\s+(?P=phrase)",
+            flags=re.IGNORECASE,
+        )
+        while True:
+            deduped = phrase_pattern.sub(r"\g<phrase>", answer)
+            if deduped == answer:
+                break
+            answer = deduped
+
+        # Collapse obvious repeated words: "the the" -> "the"
+        answer = re.sub(r"\b(\w+)\s+\1\b", r"\1", answer, flags=re.IGNORECASE)
+
+        # Remove duplicate lines
+        lines = answer.split("\n")
+
+        unique_lines = []
+
+        for line in lines:
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            if line not in unique_lines:
+                unique_lines.append(line)
+
+        cleaned = "\n".join(unique_lines).strip()
+
+        return cleaned
+
+    # ==========================================================
+    # NON STREAMING GENERATION
+    # ==========================================================
 
     def generate_answer(
         self,
@@ -49,81 +162,39 @@ class OfflineLLM:
         gen_start = time.time()
 
         if not contexts:
-            logger.debug("[LLM] No contexts provided, returning fallback")
-            return "Information not found in knowledge base."
 
-        # 🔥 Build context (limit size for speed)
-        context_build_start = time.time()
+            logger.debug("[LLM] No contexts provided")
 
-        context_text = ""
-        for c in contexts:
-            context_text += c["text"].strip() + "\n\n"
+            return "Insufficient evidence in knowledge base."
 
-        # Limit context to prevent slowdown
-        context_text = context_text[:1500]
+        context_text = "\n\n".join(
+            [c["text"].strip() for c in contexts]
+        )[:2500]
 
-        context_build_time = time.time() - context_build_start
-        logger.debug(f"[LLM] Context build: {context_build_time:.3f}s ({len(context_text)} chars)")
-
-        # 🔥 Multilingual WITHOUT language detection
-        prompt_start = time.time()
-
-        prompt = f"""You are a helpful AI assistant.
-
-Answer in the SAME language as the question.
-Use ONLY the provided context.
-Do NOT invent information.
-If the answer is not found, reply exactly:
-Information not found in knowledge base.
-
-Question:
-{question}
-
-Context:
-{context_text}
-
-Answer:
-"""
-
-        prompt_time = time.time() - prompt_start
-        logger.debug(f"[LLM] Prompt build: {prompt_time:.3f}s ({len(prompt)} chars)")
-
-        # 🔥 LLM Inference with TinyLlama optimized parameters
-        llm_call_start = time.time()
+        prompt = self._build_prompt(question, context_text)
 
         output = self.llm(
             prompt,
-            max_tokens=100,          # 🔥 Reduced to 100 tokens for speed (< 6s total)
-            temperature=0.1,         # Deterministic decoding (reproducible answers)
-            top_p=0.9,               # Nucleus sampling for quality
-            repeat_penalty=1.1,      # Avoid word repetition
-            stop=["Question:", "</s>"]
+            max_tokens=120,
+            temperature=0.0,
+            top_p=1.0,
+            repeat_penalty=1.15,
+            stop=["<|user|>", "</s>"]
         )
 
-        llm_call_time = time.time() - llm_call_start
-        tokens_per_second = 100 / llm_call_time if llm_call_time > 0 else 0
-        logger.info(
-            f"[LLM] 🚀 Inference complete: {llm_call_time:.3f}s "
-            f"({tokens_per_second:.1f} tokens/sec)"
-        )
-        logger.debug(f"[LLM] Model inference: {llm_call_time:.3f}s")
+        raw_answer = output["choices"][0]["text"].strip()
 
-        answer = output["choices"][0]["text"].strip()
-
-        if not answer:
-            logger.debug("[LLM] Empty answer, returning fallback")
-            answer = "Information not found in knowledge base."
+        answer = self._clean_output(raw_answer)
 
         total_time = time.time() - gen_start
 
-        logger.info(
-            f"[LLM] generate_answer complete: {total_time:.3f}s "
-            f"(context: {context_build_time:.3f}s, "
-            f"prompt: {prompt_time:.3f}s, "
-            f"inference: {llm_call_time:.3f}s)"
-        )
+        logger.info(f"[LLM] generate_answer complete in {total_time:.3f}s")
 
         return answer
+
+    # ==========================================================
+    # STREAMING GENERATION
+    # ==========================================================
 
     def stream_answer(
         self,
@@ -131,89 +202,46 @@ Answer:
         contexts: List[Dict],
         history: List[Dict] = None,
     ) -> Generator[str, None, None]:
-        """Stream answer tokens as they are generated.
-        
-        Yields:
-            str: Individual tokens from the LLM
-        """
-        gen_start = time.time()
 
         if not contexts:
-            logger.debug("[LLM] No contexts provided, returning fallback")
-            yield "Information not found in knowledge base."
+
+            yield "Insufficient evidence in knowledge base."
             return
 
-        # 🔥 Build context (limit size for speed)
-        context_build_start = time.time()
+        context_text = "\n\n".join(
+            [c["text"].strip() for c in contexts]
+        )[:2500]
 
-        context_text = ""
-        for c in contexts:
-            context_text += c["text"].strip() + "\n\n"
+        prompt = self._build_prompt(question, context_text)
 
-        # Limit context to prevent slowdown
-        context_text = context_text[:1500]
-
-        context_build_time = time.time() - context_build_start
-        logger.debug(f"[LLM] Context build: {context_build_time:.3f}s ({len(context_text)} chars)")
-
-        # 🔥 Multilingual WITHOUT language detection
-        prompt_start = time.time()
-
-        prompt = f"""You are a helpful AI assistant.
-
-Answer in the SAME language as the question.
-Use ONLY the provided context.
-Do NOT invent information.
-If the answer is not found, reply exactly:
-Information not found in knowledge base.
-
-Question:
-{question}
-
-Context:
-{context_text}
-
-Answer:
-"""
-
-        prompt_time = time.time() - prompt_start
-        logger.debug(f"[LLM] Prompt build: {prompt_time:.3f}s ({len(prompt)} chars)")
-
-        # 🔥 LLM Streaming with TinyLlama optimized parameters
-        llm_call_start = time.time()
-        token_count = 0
+        collected = ""
 
         try:
+
             for chunk in self.llm(
                 prompt,
-                max_tokens=100,
-                temperature=0.1,
-                top_p=0.9,
-                repeat_penalty=1.1,
-                stop=["Question:", "</s>"],
-                stream=True,  # 🔥 Enable streaming
+                max_tokens=120,
+                temperature=0.0,
+                top_p=1.0,
+                repeat_penalty=1.15,
+                stop=["<|user|>", "</s>"],
+                stream=True
             ):
+
                 token = chunk["choices"][0]["text"]
+
                 if token:
-                    token_count += 1
+
+                    collected += token
+
                     yield token
+
         except Exception as e:
+
             logger.error(f"[LLM] Streaming error: {e}")
-            yield "Error generating response. Please try again."
-            return
 
-        llm_call_time = time.time() - llm_call_start
-        tokens_per_second = token_count / llm_call_time if llm_call_time > 0 else 0
-        total_time = time.time() - gen_start
+            yield "Error generating response."
 
-        logger.info(
-            f"[LLM] 🚀 Stream complete: {llm_call_time:.3f}s "
-            f"({token_count} tokens, {tokens_per_second:.1f} tokens/sec)"
-        )
-        logger.debug(
-            f"[LLM] Stream breakdown: "
-            f"context: {context_build_time:.3f}s, "
-            f"streaming: {llm_call_time:.3f}s, "
-            f"total: {total_time:.3f}s"
-        )
+        cleaned = self._clean_output(collected)
 
+        logger.debug(f"[LLM] Final cleaned answer: {cleaned}")

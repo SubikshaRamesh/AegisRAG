@@ -64,6 +64,12 @@ const UploadPage = () => {
           );
         })
         .then((response) => {
+          if (response?.status !== "success") {
+            throw new Error(
+              response?.message || "Upload failed: backend did not report success"
+            );
+          }
+
           setFiles((prev) =>
             prev.map((f) =>
               f.id === nf.id
@@ -71,7 +77,7 @@ const UploadPage = () => {
                     ...f,
                     status: "done",
                     progress: 100,
-                    message: response.message,
+                    message: response.message || "Upload completed successfully",
                   }
                 : f
             )

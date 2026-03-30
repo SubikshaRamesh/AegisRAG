@@ -1,5 +1,4 @@
-import { X, Download } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { X, Download, FileText, ExternalLink } from "lucide-react";
 
 interface FilePreviewModalProps {
   isOpen: boolean;
@@ -7,9 +6,15 @@ interface FilePreviewModalProps {
   onClose: () => void;
 }
 
-const getFileExtension = (filename: string): string => {
-  return filename.split(".").pop()?.toLowerCase() || "";
+const getFileExtension = (filename: string): string =>
+  filename.split(".").pop()?.toLowerCase() || "";
+
+const TYPE_COLORS: Record<string, string> = {
+  pdf: "#fb923c", mp4: "#38bdf8", webm: "#38bdf8", mov: "#38bdf8", avi: "#38bdf8", mkv: "#38bdf8",
+  mp3: "#f472b6", wav: "#f472b6", ogg: "#f472b6", m4a: "#f472b6", aac: "#f472b6", flac: "#f472b6",
+  jpg: "#34d399", jpeg: "#34d399", png: "#34d399", gif: "#34d399", webp: "#34d399", svg: "#34d399",
 };
+const getColor = (ext: string) => TYPE_COLORS[ext] ?? "#a78bfa";
 
 export const FilePreviewModal = ({
   isOpen,
@@ -19,93 +24,147 @@ export const FilePreviewModal = ({
   if (!isOpen) return null;
 
   const ext = getFileExtension(filename);
-  const apiPath = `/api/files/${encodeURIComponent(filename)}`;
+  const color = getColor(ext);
+  const apiPath = `/api/files/${encodeURIComponent(filename)}?inline=true`;
 
-  // Determine file type and render appropriate preview
   const renderPreview = () => {
-    // PDF files
+    /* ---------- PDF ---------- */
     if (ext === "pdf") {
       return (
-        <iframe
-          src={apiPath}
-          title={filename}
-          className="w-full h-full rounded-lg"
-        />
+        <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", gap: 0 }}>
+          {/* Try object tag first — much better PDF rendering than iframe */}
+          <object
+            data={apiPath}
+            type="application/pdf"
+            style={{ width: "100%", flex: 1, borderRadius: 12, border: "1px solid rgba(255,255,255,0.07)", background: "#1e1e2e" }}
+          >
+            {/* Fallback if object tag doesn't work */}
+            <iframe
+              src={`${apiPath}#toolbar=1&navpanes=1&scrollbar=1&view=FitH`}
+              title={filename}
+              style={{ width: "100%", height: "100%", border: "none", borderRadius: 12, background: "#1e1e2e" }}
+            >
+              {/* Last fallback */}
+              <div style={{
+                display: "flex", flexDirection: "column", alignItems: "center",
+                justifyContent: "center", gap: 16, padding: 40, textAlign: "center"
+              }}>
+                <div style={{
+                  width: 64, height: 64, borderRadius: "50%",
+                  background: "rgba(251,146,60,0.1)", border: "1px solid rgba(251,146,60,0.3)",
+                  display: "flex", alignItems: "center", justifyContent: "center"
+                }}>
+                  <FileText size={28} color="#fb923c" />
+                </div>
+                <div>
+                  <p style={{ fontSize: 15, fontWeight: 600, color: "#e2e8f0", marginBottom: 6 }}>
+                    PDF preview unavailable
+                  </p>
+                  <p style={{ fontSize: 13, color: "#64748b" }}>
+                    Your browser doesn't support inline PDF previews.
+                  </p>
+                </div>
+                <a
+                  href={apiPath}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "8px 18px", borderRadius: 8, background: "rgba(251,146,60,0.15)",
+                    border: "1px solid rgba(251,146,60,0.4)", color: "#fb923c",
+                    fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "'DM Mono', monospace"
+                  }}
+                >
+                  <ExternalLink size={14} />
+                  Open in new tab
+                </a>
+              </div>
+            </iframe>
+          </object>
+        </div>
       );
     }
 
-    // Image files
+    /* ---------- Images ---------- */
     if (["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(ext)) {
       return (
         <img
           src={apiPath}
           alt={filename}
-          className="max-w-full max-h-full object-contain rounded-lg"
+          style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 12 }}
         />
       );
     }
 
-    // Audio files
+    /* ---------- Audio ---------- */
     if (["mp3", "wav", "aac", "flac", "ogg", "m4a"].includes(ext)) {
       return (
-        <div className="flex flex-col items-center justify-center gap-4 p-8">
-          <div className="w-24 h-24 rounded-full bg-accent flex items-center justify-center">
-            <svg
-              className="w-12 h-12 text-primary"
-              fill="currentColor"
-              viewBox="0 0 20 20"
-            >
-              <path d="M18 3a1 1 0 00-1.196-.15l-1.559.987a2 2 0 01-2.29-.16l-.707-.707a1 1 0 00-1.414 1.414l.707.707a2 2 0 01.16 2.29l-.987 1.559A1 1 0 006 13h.01a6 6 0 0011.986 0H18a1 1 0 00.804-1.604l-.663-.663A2 2 0 0018 10V4a2 2 0 00-2-1h-2z" />
+        <div style={{
+          display: "flex", flexDirection: "column", alignItems: "center",
+          justifyContent: "center", gap: 24, padding: 40
+        }}>
+          <div style={{
+            width: 100, height: 100, borderRadius: "50%",
+            background: "rgba(244,114,182,0.1)", border: "1px solid rgba(244,114,182,0.3)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 0 40px rgba(244,114,182,0.15)"
+          }}>
+            <svg className="w-12 h-12" style={{ width: 48, height: 48, color: "#f472b6" }} fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
             </svg>
           </div>
-          <audio
-            controls
-            src={apiPath}
-            className="w-full max-w-md"
-          />
-          <p className="text-sm text-muted-foreground text-center">{filename}</p>
+          <audio controls src={apiPath} style={{ width: "100%", maxWidth: 420 }} />
+          <p style={{ fontSize: 13, color: "#64748b", fontFamily: "'DM Mono', monospace" }}>{filename}</p>
         </div>
       );
     }
 
-    // Video files
-    if (["mp4", "webm", "ogg", "avi", "mov", "mkv"].includes(ext)) {
+    /* ---------- Video ---------- */
+    if (["mp4", "webm", "avi", "mov", "mkv"].includes(ext)) {
       return (
         <video
           controls
           src={apiPath}
-          className="w-full h-full rounded-lg object-contain"
+          style={{ width: "100%", height: "100%", borderRadius: 12, objectFit: "contain", background: "#000" }}
         />
       );
     }
 
-    // DOCX and unsupported formats
+    /* ---------- Unsupported ---------- */
     return (
-      <div className="flex flex-col items-center justify-center gap-6 p-8">
-        <div className="w-24 h-24 rounded-full bg-accent flex items-center justify-center">
-          <svg
-            className="w-12 h-12 text-primary"
-            fill="currentColor"
-            viewBox="0 0 20 20"
-          >
-            <path d="M9 2a2 2 0 00-2 2v12a2 2 0 002 2h6a2 2 0 002-2V6.414A2 2 0 0016.414 5L14 2.586A2 2 0 0012.586 2H9z" />
-          </svg>
+      <div style={{
+        display: "flex", flexDirection: "column", alignItems: "center",
+        justifyContent: "center", gap: 20, padding: 48, textAlign: "center"
+      }}>
+        <div style={{
+          width: 80, height: 80, borderRadius: "50%",
+          background: `rgba(167,139,250,0.1)`, border: "1px solid rgba(167,139,250,0.3)",
+          display: "flex", alignItems: "center", justifyContent: "center"
+        }}>
+          <FileText size={32} color="#a78bfa" />
         </div>
-        <div className="text-center">
-          <p className="text-lg font-semibold text-foreground mb-2">
+        <div>
+          <p style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0", marginBottom: 8 }}>
             Preview not supported
           </p>
-          <p className="text-sm text-muted-foreground mb-6">
-            Preview is not available for {ext.toUpperCase()} files.
-            <br />
-            Please download to view.
+          <p style={{ fontSize: 13, color: "#64748b", lineHeight: 1.6 }}>
+            This file type cannot be previewed in the browser.<br />
+            Download it to view locally.
           </p>
         </div>
-        <Button asChild>
-          <a href={apiPath} download>
-            Download {ext.toUpperCase()}
-          </a>
-        </Button>
+        <a
+          href={apiPath}
+          download
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            padding: "9px 20px", borderRadius: 10, background: "rgba(167,139,250,0.15)",
+            border: "1px solid rgba(167,139,250,0.4)", color: "#a78bfa",
+            fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "'DM Mono', monospace"
+          }}
+        >
+          <Download size={14} />
+          Download {ext.toUpperCase()}
+        </a>
       </div>
     );
   };
@@ -114,41 +173,124 @@ export const FilePreviewModal = ({
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-foreground/50 backdrop-blur-sm z-40"
         onClick={onClose}
+        style={{
+          position: "fixed", inset: 0,
+          background: "rgba(0,0,0,0.75)",
+          backdropFilter: "blur(8px)",
+          zIndex: 40,
+        }}
       />
 
       {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+      <div style={{
+        position: "fixed", inset: 0, zIndex: 50,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20, pointerEvents: "none"
+      }}>
+        <div style={{
+          background: "rgba(15,18,30,0.98)",
+          border: `1px solid ${color}22`,
+          borderRadius: 20,
+          boxShadow: `0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04), 0 0 60px ${color}11`,
+          width: "100%",
+          maxWidth: 960,
+          maxHeight: "92vh",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          pointerEvents: "all",
+          animation: "modalIn 0.22s cubic-bezier(.34,1.56,.64,1)",
+        }}>
           {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-border">
-            <h2 className="text-lg font-semibold text-foreground truncate flex-1">
-              {filename}
-            </h2>
-            <div className="flex items-center gap-2">
-              <Button asChild size="sm" variant="outline">
-                <a href={apiPath} download>
-                  <Download className="w-4 h-4" />
-                  Download
-                </a>
-              </Button>
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "14px 18px",
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
+            background: "rgba(255,255,255,0.02)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+                background: `rgba(${color === "#fb923c" ? "251,146,60" : "56,189,248"},0.12)`,
+                border: `1px solid ${color}33`,
+                display: "flex", alignItems: "center", justifyContent: "center"
+              }}>
+                <FileText size={14} color={color} />
+              </div>
+              <span style={{
+                fontSize: 14, fontWeight: 600, color: "#e2e8f0",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                fontFamily: "'DM Sans', sans-serif"
+              }}>{filename}</span>
+              <span style={{
+                fontSize: 10, padding: "2px 7px", borderRadius: 4,
+                background: `${color}18`, color, border: `1px solid ${color}33`,
+                fontFamily: "'DM Mono', monospace", textTransform: "uppercase", flexShrink: 0
+              }}>{ext}</span>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexShrink: 0, alignItems: "center" }}>
+              <a
+                href={apiPath}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, padding: "6px 12px",
+                  borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)",
+                  background: "rgba(255,255,255,0.04)", color: "#94a3b8",
+                  fontSize: 12, textDecoration: "none", fontWeight: 600,
+                  fontFamily: "'DM Mono', monospace"
+                }}
+              >
+                <ExternalLink size={12} /> Open
+              </a>
+              <a
+                href={apiPath}
+                download
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, padding: "6px 12px",
+                  borderRadius: 8, border: `1px solid ${color}44`,
+                  background: `${color}12`, color,
+                  fontSize: 12, textDecoration: "none", fontWeight: 600,
+                  fontFamily: "'DM Mono', monospace"
+                }}
+              >
+                <Download size={12} /> Download
+              </a>
               <button
                 onClick={onClose}
-                className="p-2 hover:bg-accent rounded-lg transition-colors text-muted-foreground hover:text-foreground"
-                title="Close"
+                style={{
+                  width: 30, height: 30, borderRadius: 8, border: "none",
+                  background: "rgba(255,255,255,0.06)", color: "#94a3b8",
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  transition: "background 0.2s"
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.12)")}
+                onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
               >
-                <X className="w-5 h-5" />
+                <X size={15} />
               </button>
             </div>
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-auto p-4 flex items-center justify-center">
+          <div style={{
+            flex: 1, overflow: "auto", padding: 16,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            minHeight: 0,
+          }}>
             {renderPreview()}
           </div>
         </div>
       </div>
+
+      <style>{`
+        @keyframes modalIn {
+          from { opacity: 0; transform: scale(0.95) translateY(8px); }
+          to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+      `}</style>
     </>
   );
 };

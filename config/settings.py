@@ -52,7 +52,7 @@ class Settings:
     CLIP_PRETRAINED: str = os.getenv("CLIP_PRETRAINED", "openai")
     
     # 🔥 TinyLlama optimized for CPU inference (< 6 seconds)
-    LLM_MODEL_PATH: str = str(MODELS_PATH / "tinyLlama.gguf")
+    LLM_MODEL_PATH: str = str(MODELS_PATH / "Phi-3-mini-4k-instruct-q4.gguf")
     LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "1024"))
     LLM_THREADS: int = int(os.getenv("LLM_THREADS", "-1"))  # -1 = use all CPU cores
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "100"))  # Reduced for speed

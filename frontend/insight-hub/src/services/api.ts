@@ -2,6 +2,13 @@ export interface Source {
   type: "pdf" | "image" | "audio" | "video" | "docx" | "unknown" | string;
   source: string;
   score: number;
+  page?: number;
+}
+
+export interface StreamMetadata {
+  answer?: string;
+  confidence?: number;
+  sources?: Source[];
 }
 
 export interface QueryResponse {
@@ -82,6 +89,23 @@ export interface FilesInventoryResponse {
   files: FileInventoryItem[];
 }
 
+export interface DocumentItem {
+  id: number;
+  name: string;
+  type: string;
+  size: string;
+  uploadedAt: string;
+  category: string;
+  chunks?: number;
+}
+
+export interface DocumentsResponse {
+  documents?: DocumentItem[];
+  files?: FileInventoryItem[];
+  status?: string;
+  count?: number;
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -137,7 +161,7 @@ class ApiService {
     question: string,
     chatId: string,
     onToken: (token: string) => void,
-    onMetadata?: (metadata: any) => void,
+    onMetadata?: (metadata: StreamMetadata) => void,
     onError?: (error: Error) => void,
     onComplete?: () => void
   ): Promise<void> {
@@ -199,20 +223,71 @@ class ApiService {
   private _processStreamChunk(
     data: string,
     onToken: (token: string) => void,
-    onMetadata?: (metadata: any) => void,
+    onMetadata?: (metadata: StreamMetadata) => void,
     onError?: (error: Error) => void
   ): void {
-    try {
-      // Try to parse as JSON (metadata)
-      const parsed = JSON.parse(data);
-      if (parsed.type === "metadata") {
-        onMetadata?.(parsed);
-      } else if (parsed.type === "error") {
-        onError?.(new Error(parsed.message || "Unknown error"));
+    const chunk = data.trim();
+    if (!chunk) return;
+
+    if (chunk === "[DONE]") return;
+
+    if (chunk.startsWith("[ERROR]")) {
+      onError?.(new Error(chunk.replace("[ERROR]", "").trim() || "Unknown error"));
+      return;
+    }
+
+    const parsed = this._parseMetadataChunk(chunk);
+    if (parsed?.type === "token") {
+      const tokenContent = typeof parsed.content === "string" ? parsed.content : "";
+      if (tokenContent) {
+        onToken(tokenContent);
       }
+      return;
+    }
+
+    if (parsed?.type === "metadata") {
+      onMetadata?.({
+        answer: parsed.answer,
+        confidence: parsed.confidence,
+        sources: parsed.sources,
+      });
+      return;
+    }
+
+    if (parsed?.type === "error") {
+      onError?.(new Error(parsed.message || "Unknown error"));
+      return;
+    }
+
+    onToken(data);
+  }
+
+  private _parseMetadataChunk(data: string): any | null {
+    try {
+      return JSON.parse(data);
     } catch {
-      // Not JSON, treat as token text
-      onToken(data);
+      // Backend currently emits Python dict-like strings in SSE metadata.
+      // Convert common cases safely so metadata does not leak into assistant text.
+      if (!data.startsWith("{") || !data.endsWith("}")) {
+        return null;
+      }
+
+      let normalized = data
+        .replace(/'/g, '"')
+        .replace(/\bNone\b/g, "null")
+        .replace(/\bTrue\b/g, "true")
+        .replace(/\bFalse\b/g, "false");
+
+      try {
+        return JSON.parse(normalized);
+      } catch {
+        normalized = normalized.replace(/\"([^\"]+)\"\s*:/g, (_, key) => `"${key}":`);
+        try {
+          return JSON.parse(normalized);
+        } catch {
+          return null;
+        }
+      }
     }
   }
 
@@ -261,6 +336,12 @@ class ApiService {
   }
 
   async getFiles(): Promise<FilesInventoryResponse> {
+    return this.request("/files");
+  }
+
+  async getDocuments(): Promise<DocumentsResponse> {
+    // Backend exposes file inventory at /api/files.
+    // Keep this method name for backward compatibility with DocumentsPage usage.
     return this.request("/files");
   }
 }

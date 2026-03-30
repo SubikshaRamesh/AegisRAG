@@ -2,12 +2,39 @@ import pdfplumber
 from typing import List
 from core.schema.chunk import Chunk
 import os
+import re
+
+
+def clean_text(text: str) -> str:
+    """
+    Normalize PDF extracted text for cleaner RAG ingestion.
+    """
+
+    # Replace newlines with space
+    text = text.replace("\n", " ")
+
+    # Fix repeated commas (",,")
+    text = re.sub(r",\s*,+", ", ", text)
+
+    # Fix repeated colons ("::")
+    text = re.sub(r":\s*:+", ":", text)
+
+    # Fix broken parentheses "( :"
+    text = re.sub(r"\(\s*:", "(", text)
+
+    # Remove multiple spaces
+    text = re.sub(r"\s+", " ", text)
+
+    # Remove strange spacing before punctuation
+    text = re.sub(r"\s+([.,;:])", r"\1", text)
+
+    return text.strip()
 
 
 def ingest_pdf(file_path: str, chunk_size: int = 200, overlap: int = 40) -> List[Chunk]:
     """
     Convert a PDF file into deterministic Chunk objects.
-    Each chunk has stable chunk_id for duplicate prevention.
+    Cleaned + normalized for high-quality RAG.
     """
     chunks: List[Chunk] = []
 
@@ -15,11 +42,14 @@ def ingest_pdf(file_path: str, chunk_size: int = 200, overlap: int = 40) -> List
 
     with pdfplumber.open(file_path) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text()
-            if not text:
+            raw_text = page.extract_text()
+            if not raw_text:
                 continue
 
-            words = text.strip().split()
+            # 🔥 Clean text BEFORE chunking
+            text = clean_text(raw_text)
+
+            words = text.split()
             start = 0
             chunk_index = 0
 
@@ -32,7 +62,6 @@ def ingest_pdf(file_path: str, chunk_size: int = 200, overlap: int = 40) -> List
                     start = end - overlap
                     continue
 
-                # 🔥 Deterministic chunk_id
                 chunk_id = f"{source_file}_page{page_number}_chunk{chunk_index}"
 
                 chunk = Chunk(
