@@ -5,12 +5,12 @@ import os
 
 from core.retrieval.reranker import CrossEncoderReranker
 from core.retrieval.bm25_retriever import BM25Retriever
-from core.embeddings.embedder import EmbeddingGenerator
-from core.embeddings.clip_embedder import CLIPEmbeddingGenerator
+from core.embeddings.embedder import EmbeddingGenerator, get_embedding_generator
+from core.embeddings.clip_embedder import CLIPEmbeddingGenerator, get_clip_embedding_generator
 from core.vector_store.faiss_manager import FaissManager
 from core.vector_store.image_faiss_manager import ImageFaissManager
 from core.schema.chunk import Chunk
-from core.llm.generator import OfflineLLM
+from core.llm.groq_generator import GroqLLM
 from core.storage.metadata_store import MetadataStore
 from core.logger import get_logger
 
@@ -34,7 +34,7 @@ SUMMARY_KEYWORDS = {
 
 MAX_DISTANCE = 5.0
 MAX_CONTEXT_CHARS = 5000
-CONFIDENCE_THRESHOLD = 35
+CONFIDENCE_THRESHOLD = 20
 DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".md"}
 AUDIO_EXTENSIONS = {".wav", ".mp3"}
 
@@ -48,17 +48,19 @@ class QuerySystem:
         image_faiss: ImageFaissManager,
         db_path: str = "workspaces/default/storage/metadata/chunks.db",
         model_path: str = "models/Phi-3-mini-4k-instruct-q4.gguf",
+        text_embedder: Optional[EmbeddingGenerator] = None,
+        clip_embedder: Optional[CLIPEmbeddingGenerator] = None,
     ):
 
         logger.info("[INIT] Creating QuerySystem...")
 
-        self.text_embedder = EmbeddingGenerator()
-        self.clip_embedder = CLIPEmbeddingGenerator()
+        self.text_embedder = text_embedder or get_embedding_generator()
+        self.clip_embedder = clip_embedder or get_clip_embedding_generator()
 
         self.text_faiss = text_faiss
         self.image_faiss = image_faiss
 
-        self.llm = OfflineLLM(model_path=model_path)
+        self.llm =  GroqLLM()
         self.store = MetadataStore(db_path)
 
         # Hybrid retrieval
@@ -267,15 +269,29 @@ class QuerySystem:
 
         avg_distance = sum(distances) / len(distances)
 
-        similarity_score = max(0, 1 - (avg_distance / 2))
-        coverage_score = min(len(selected) / top_k, 1)
+        best_distance = min(distances)
+        similarity_score = max(0.0, 1.0 - min(avg_distance, 2.5) / 2.5)
+        best_score = max(0.0, 1.0 - min(best_distance, 2.5) / 2.5)
+        coverage_score = min(len(selected) / max(top_k, 1), 1.0)
+        diversity_score = min(len({c.source_file for c in chunks}) / max(len(selected), 1), 1.0)
 
         confidence = round(
-            (similarity_score * 0.7 + coverage_score * 0.3) * 100,
-            2
+            min(
+                100.0,
+                max(
+                    0.0,
+                    (
+                        similarity_score * 45.0
+                        + best_score * 20.0
+                        + coverage_score * 20.0
+                        + diversity_score * 15.0
+                    )
+                )
+            ),
+            2,
         )
 
-        if confidence < CONFIDENCE_THRESHOLD:
+        if not is_summary_query and confidence < CONFIDENCE_THRESHOLD:
             return {
                 "answer": "Insufficient evidence in knowledge base.",
                 "sources": [],
@@ -309,6 +325,8 @@ class QuerySystem:
                     chunk.source_type,
                 )
 
+                snippet = chunk.text.strip().replace("\n", " ")[:220]
+
                 sources_dict[chunk.source_file] = {
                     "source": chunk.source_file,
                     "type": source_type,
@@ -316,6 +334,7 @@ class QuerySystem:
                     "source_file": chunk.source_file,
                     "page_number": chunk.page_number,
                     "timestamp": chunk.timestamp,
+                    "snippet": snippet,
                     "score": score_data.get("rerank_score") or score_data.get("retrieval_score") or 0,
                     "retrieval_score": score_data.get("retrieval_score"),
                     "rerank_score": score_data.get("rerank_score"),
@@ -389,12 +408,14 @@ class QuerySystem:
     # =====================================================
 
     def _fetch_chunks_from_db(self, chunk_ids: List[str]) -> List[Chunk]:
+        chunks = []
 
-        return [
-            self.store.get_chunk(cid)
-            for cid in chunk_ids
-            if self.store.get_chunk(cid)
-        ]
+        for cid in chunk_ids:
+            chunk = self.store.get_chunk(cid)
+            if chunk:
+                chunks.append(chunk)
+
+        return chunks
 
     def _build_context(self, chunks: List[Chunk]) -> List[Dict]:
 

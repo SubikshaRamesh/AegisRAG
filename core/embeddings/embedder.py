@@ -3,6 +3,8 @@ from core.logger import get_logger
 
 logger = get_logger(__name__)
 
+_shared_embedder = None
+
 class EmbeddingGenerator:
     """
     Loads embedding model ONCE.
@@ -11,9 +13,9 @@ class EmbeddingGenerator:
     def __init__(self):
         logger.info("Loading embedding model once at startup...")
         self.model = SentenceTransformer(
-            "models/embedding",
-            device="cpu"
-        )
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    device="cpu"
+)
         logger.info("Embedding model loaded.")
 
     def embed(self, texts):
@@ -22,3 +24,10 @@ class EmbeddingGenerator:
             convert_to_numpy=True,
             normalize_embeddings=True
         )
+
+
+def get_embedding_generator() -> EmbeddingGenerator:
+    global _shared_embedder
+    if _shared_embedder is None:
+        _shared_embedder = EmbeddingGenerator()
+    return _shared_embedder

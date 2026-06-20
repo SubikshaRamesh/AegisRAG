@@ -83,12 +83,12 @@ class Settings:
     @classmethod
     def validate(cls):
         """Validate essential settings at startup."""
-        if not cls.MODELS_PATH.exists():
-            raise RuntimeError(f"Models directory not found: {cls.MODELS_PATH}")
+        #if not cls.MODELS_PATH.exists():
+         #   raise RuntimeError(f"Models directory not found: {cls.MODELS_PATH}")
         
         # Check if LLM model exists
-        if not Path(cls.LLM_MODEL_PATH).exists():
-            raise RuntimeError(f"LLM model not found: {cls.LLM_MODEL_PATH}")
+        #if not Path(cls.LLM_MODEL_PATH).exists():
+         #   raise RuntimeError(f"LLM model not found: {cls.LLM_MODEL_PATH}")
         
         return True
 

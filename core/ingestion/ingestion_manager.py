@@ -9,8 +9,8 @@ from core.ingestion.video_ingest import ingest_video_full
 from core.ingestion.image_ingest import ingest_image
 from core.ingestion.document_ingest import ingest_docx
 from core.storage.metadata_store import MetadataStore
-from core.embeddings.embedder import EmbeddingGenerator
-from core.embeddings.clip_embedder import CLIPEmbeddingGenerator
+from core.embeddings.embedder import EmbeddingGenerator, get_embedding_generator
+from core.embeddings.clip_embedder import CLIPEmbeddingGenerator, get_clip_embedding_generator
 from core.vector_store.faiss_manager import FaissManager
 from core.vector_store.image_faiss_manager import ImageFaissManager
 
@@ -83,7 +83,7 @@ def ingest(file_path: str, file_type: str, source_id: str = "") -> List[Chunk]:
     # ----------------------------------------
     text_chunks = [c for c in chunks if c.text]
     if text_chunks:
-        embedder = EmbeddingGenerator()
+        embedder = get_embedding_generator()
         texts = [c.text for c in text_chunks]
         embeddings = embedder.embed(texts)
         embeddings = np.array(embeddings).astype("float32")
@@ -98,7 +98,7 @@ def ingest(file_path: str, file_type: str, source_id: str = "") -> List[Chunk]:
     image_chunks = [c for c in chunks if c.source_type == "video_frame"]
 
     if image_chunks:
-        clip = CLIPEmbeddingGenerator()
+        clip = get_clip_embedding_generator()
         image_paths = [c.page_number for c in image_chunks]
 
         embeddings = clip.embed_images(image_paths)

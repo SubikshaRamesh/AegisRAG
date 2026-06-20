@@ -4,6 +4,9 @@ from PIL import Image
 from typing import List
 
 
+_shared_clip_embedder = None
+
+
 class CLIPEmbeddingGenerator:
     def __init__(self):
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
@@ -40,3 +43,10 @@ class CLIPEmbeddingGenerator:
             text_features /= text_features.norm(dim=-1, keepdim=True)
 
         return text_features.cpu().numpy()
+
+
+def get_clip_embedding_generator() -> CLIPEmbeddingGenerator:
+    global _shared_clip_embedder
+    if _shared_clip_embedder is None:
+        _shared_clip_embedder = CLIPEmbeddingGenerator()
+    return _shared_clip_embedder

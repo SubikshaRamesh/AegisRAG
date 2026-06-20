@@ -29,6 +29,8 @@ from core.errors import (
 )
 from core.schemas import QueryRequest, ChatCreateResponse, ChatHistoryResponse, ConversationSummary
 from core.pipeline.query_system import QuerySystem
+from core.embeddings.embedder import get_embedding_generator
+from core.embeddings.clip_embedder import get_clip_embedding_generator
 from core.vector_store.faiss_manager import FaissManager
 from core.vector_store.image_faiss_manager import ImageFaissManager
 from core.ingestion.ingestion_manager import ingest
@@ -125,11 +127,15 @@ def startup():
         # ============ INITIALIZE QUERY SYSTEM (ONCE at startup) ============
         logger.info("Initializing QuerySystem (embedding models + LLM)...")
         qs_start = time.time()
+        text_embedder = get_embedding_generator()
+        clip_embedder = get_clip_embedding_generator()
         query_system = QuerySystem(
             text_faiss=text_faiss,
             image_faiss=image_faiss,
             db_path=settings.DB_PATH,
             model_path=settings.LLM_MODEL_PATH,
+            text_embedder=text_embedder,
+            clip_embedder=clip_embedder,
         )
         qs_load_time = time.time() - qs_start
         logger.info(f"✓ QuerySystem initialized in {qs_load_time:.3f}s")
@@ -494,6 +500,8 @@ async def query_endpoint(
                 "type": s.get("source_type", "unknown"),
                 "source": s.get("source_file", ""),
                 "score": s.get("score", 0),
+                "page": s.get("page_number"),
+                "snippet": s.get("snippet", ""),
             }
             for s in sources
         ]
@@ -519,6 +527,8 @@ async def query_endpoint(
                 "type": source.get("source_type", "unknown"),
                 "source": source.get("source_file", ""),
                 "score": source.get("score", 0),
+                "page": source.get("page_number"),
+                "snippet": source.get("snippet", ""),
             })
 
         return {
