@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { api, ApiError, Source } from "@/services/api";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
 import { extractErrorMessage } from "@/utils/errorHandler";
+import { generateId } from "@/utils/id";
 
 type Message = {
   id: string;
@@ -75,7 +76,7 @@ const HomePage = () => {
     try {
       const chatData = await api.loadConversation(id);
       const loadedMessages = chatData.messages.map((msg) => ({
-        id: crypto.randomUUID(),
+        id: generateId(),
         role: msg.role as "user" | "assistant",
         content: msg.content,
         timestamp: new Date(msg.timestamp * 1000),
@@ -175,12 +176,12 @@ const HomePage = () => {
     setIsLoading(true);
 
     const userMessage: Message = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       role: "user",
       content: query,
       timestamp: new Date(),
     };
-    const assistantMessageId = crypto.randomUUID();
+    const assistantMessageId = generateId();
     setMessages((prev) => [
       ...prev,
       userMessage,
