@@ -1,6 +1,5 @@
-Yes. Here is the **full README in one copy-pasteable Markdown block**. You can copy everything inside the block and replace your current `README.md`.
 
-````markdown
+
 # 🛡️ AegisRAG
 
 ### Local-First Multimodal Retrieval-Augmented Generation System
@@ -913,5 +912,4 @@ This project is licensed under the **MIT License**.
 
 ```
 
-**Copy everything inside the code block** and paste it directly into your `README.md`.
-```
+
