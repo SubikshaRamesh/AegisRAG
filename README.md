@@ -910,6 +910,3 @@ GitHub: [https://github.com/SubikshaRamesh](https://github.com/SubikshaRamesh)
 
 This project is licensed under the **MIT License**.
 
-```
-
-
